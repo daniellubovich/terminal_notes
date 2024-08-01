@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{stdin, stdout, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use termion::event::Key;
 use termion::input::TermRead;
@@ -22,28 +23,29 @@ struct Args {
 }
 
 fn launch_editor(filename: &str, editor: &str) {
-    let output = Command::new(editor)
+    Command::new(editor)
         .args([filename])
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .output()
         .expect("Failed to execute command");
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        println!("nvim output:\n{}", stdout);
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("ls command failed:\n{}", stderr);
-    }
 }
 
 fn main() {
     let args = Args::parse();
 
     let notes_directory = "/home/daniel/.notes/";
-    let mut quick_notes_file = String::from(notes_directory);
-    quick_notes_file.push_str(&String::from("default_notes.txt"));
+    let quick_notes_filename = "default_notes.txt";
+    let quick_notes_file_path = format!("{}{}", notes_directory, quick_notes_filename);
+
+    if !Path::new(notes_directory).exists() {
+        println!("No ~/.notes/ folder exists. Please create it first.");
+        return;
+    }
+    if !Path::new(&quick_notes_file_path).exists() {
+        println!("No ~/.notes/default_notes.txt file exists. Please create it first.");
+        return;
+    }
 
     if !args.quick_note.is_empty() {
         let current_utc: DateTime<Utc> = Utc::now();
@@ -53,20 +55,12 @@ fn main() {
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
-            .open(quick_notes_file)
+            .open(quick_notes_file_path)
             .expect("it opens quick notes file");
 
         file.write_all(quick_note.as_bytes())
             .expect("it wrote quick note to file");
     } else if args.edit {
-        // TODO list out all files except default_notes.txt in the ~/.notes dir.
-        // Allow the user to navigate up and down the list, and open the editor when a file is
-        // selected.
-
-        let files = fs::read_dir(notes_directory).unwrap();
-
-        let mut selected_index = 0;
-
         let mut stdout = stdout().into_raw_mode().unwrap();
         let stdin = stdin();
 
@@ -98,10 +92,15 @@ fn main() {
                     .unwrap();
                 }
             }
+
+            writeln!(stdout, "{hide}", hide = cursor::Hide).unwrap();
+
             stdout.flush().unwrap();
         }
 
+        let files = fs::read_dir(notes_directory).unwrap();
         let file_entries: Vec<std::fs::DirEntry> = files.map(|entry| entry.unwrap()).collect();
+        let mut selected_index = 0;
 
         print_files(&mut stdout, &file_entries, selected_index);
 
@@ -118,11 +117,18 @@ fn main() {
                     }
                 }
                 Key::Char('q') => {
-                    writeln!(stdout, "{}{}", termion::clear::All, cursor::Goto(1, 1)).unwrap();
+                    write!(
+                        stdout,
+                        "{}{}{}",
+                        termion::clear::All,
+                        cursor::Goto(1, 1),
+                        cursor::Show
+                    )
+                    .unwrap();
                     break;
                 }
                 Key::Char('\n') => {
-                    let editor = env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+                    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                     launch_editor(
                         file_entries[selected_index].path().to_str().unwrap(),
                         &editor,
