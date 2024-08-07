@@ -7,6 +7,7 @@ use std::fs::OpenOptions;
 use std::io::{stdin, stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::{thread, time};
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
@@ -93,15 +94,15 @@ fn main() {
                 }
             }
 
-            writeln!(stdout, "{hide}", hide = cursor::Hide).unwrap();
-
+            let (_, h) = termion::terminal_size().unwrap();
+            write!(stdout, "{hide}", hide = cursor::Hide).unwrap();
+            write!(stdout, "{goto}Delete file [D]", goto = cursor::Goto(1, h)).unwrap();
             stdout.flush().unwrap();
         }
 
         let files = fs::read_dir(notes_directory).unwrap();
         let file_entries: Vec<std::fs::DirEntry> = files.map(|entry| entry.unwrap()).collect();
         let mut selected_index = 0;
-
         print_files(&mut stdout, &file_entries, selected_index);
 
         for c in stdin.keys() {
@@ -127,6 +128,37 @@ fn main() {
                     .unwrap();
                     break;
                 }
+                Key::Char('D') => {
+                    let file_to_del = file_entries[selected_index]
+                        .path()
+                        .to_str()
+                        .expect("valid filename")
+                        .to_owned();
+                    if !file_to_del.contains("default_notes.txt") {
+                        write!(
+                            stdout,
+                            "{}{}Deleting {}...",
+                            termion::clear::All,
+                            cursor::Goto(1, 1),
+                            file_to_del
+                        )
+                        .unwrap();
+                        stdout.flush().unwrap();
+                        thread::sleep(time::Duration::from_secs(1));
+                        fs::remove_file(file_to_del).unwrap();
+                        selected_index = 0;
+                    } else {
+                        write!(
+                            stdout,
+                            "{}{}Cannot delete your default notes file.",
+                            termion::clear::All,
+                            cursor::Goto(1, 1),
+                        )
+                        .unwrap();
+                        stdout.flush().unwrap();
+                        thread::sleep(time::Duration::from_secs(1));
+                    }
+                }
                 Key::Char('\n') => {
                     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                     launch_editor(
@@ -136,6 +168,8 @@ fn main() {
                 }
                 _ => {}
             }
+            let files = fs::read_dir(notes_directory).unwrap();
+            let file_entries: Vec<std::fs::DirEntry> = files.map(|entry| entry.unwrap()).collect();
             print_files(&mut stdout, &file_entries, selected_index);
         }
     } else {
