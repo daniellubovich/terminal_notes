@@ -1,4 +1,5 @@
-extern crate termion;
+mod prompt;
+use crate::prompt::{clear, prompt, prompt_yesno};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use std::env;
@@ -17,7 +18,6 @@ use termion::{color, cursor};
 
 enum AppState {
     NavigatingFiles,
-    PromptForNewFileName,
     Quitting,
 }
 
@@ -59,17 +59,6 @@ impl NavigationState {
     fn set_mode(&mut self, mode: AppState) {
         self.mode = mode;
     }
-}
-
-fn clear<W: Write>(stdout: &mut W) {
-    write!(
-        stdout,
-        "{}{}{}",
-        termion::clear::All,
-        cursor::Goto(1, 1),
-        cursor::Show
-    )
-    .unwrap();
 }
 
 fn launch_editor(filename: &str, editor: &str) {
@@ -130,10 +119,10 @@ fn display_file_list<W: Write>(stdout: &mut W, files: &[std::fs::DirEntry], sele
     stdout.flush().unwrap();
 }
 
-fn navigate<W: Write>(
+fn show_file_navigation(
     notes_directory: &str,
     state: &mut NavigationState,
-    stdout: &mut W,
+    stdout: &mut RawTerminal<Stdout>,
     stdin: &std::io::Stdin,
 ) {
     let mut files = fs::read_dir(notes_directory).unwrap();
@@ -155,7 +144,6 @@ fn navigate<W: Write>(
                 }
             }
             Key::Char('q') => {
-                clear(stdout);
                 state.set_mode(AppState::Quitting);
                 break;
             }
@@ -165,19 +153,16 @@ fn navigate<W: Write>(
                     .to_str()
                     .expect("valid filename")
                     .to_owned();
+
                 if !file_to_del.contains("default_notes.txt") {
-                    write!(
+                    if prompt_yesno(
                         stdout,
-                        "{}{}Deleting {}...",
-                        termion::clear::All,
-                        cursor::Goto(1, 1),
-                        file_to_del
-                    )
-                    .unwrap();
-                    stdout.flush().unwrap();
-                    fs::remove_file(file_to_del).unwrap();
-                    thread::sleep(time::Duration::from_secs(1));
-                    state.set_selected_index(0);
+                        stdin,
+                        format!("Are you sure you want to delete {}? [y/N] ", file_to_del),
+                    ) {
+                        fs::remove_file(file_to_del).expect("Could not delete file.");
+                        state.set_selected_index(0);
+                    }
                 } else {
                     write!(
                         stdout,
@@ -191,8 +176,61 @@ fn navigate<W: Write>(
                 }
             }
             Key::Char('n') => {
-                state.set_mode(AppState::PromptForNewFileName);
-                break;
+                let mut file_name = String::new();
+
+                loop {
+                    // Prompt in a loop, only exiting if we create a valid file.
+                    prompt(
+                        stdout,
+                        stdin,
+                        String::from("Enter a name for your new note file: "),
+                        &mut file_name,
+                    );
+
+                    // Check for empty entry.  Re-prompt if it is.
+                    if file_name.is_empty() {
+                        clear(stdout);
+                        write!(stdout, "File name empty. Try again, bro.").unwrap();
+                        stdout.flush().expect("Could not write output");
+                        thread::sleep(time::Duration::from_secs(1));
+                        continue;
+                    }
+
+                    let new_file_path = format!("{}{}", notes_directory, file_name);
+                    let new_file_path = Path::new(&new_file_path);
+
+                    // Check for a valid extension and add one if there isn't one.
+                    let new_file_path = match new_file_path.extension() {
+                        // TODO maybe check from a list of valid extensions?
+                        Some(_) => new_file_path.to_path_buf(),
+                        None => {
+                            let path_with_ext = new_file_path.to_str().unwrap().to_owned() + ".txt";
+                            Path::new(&path_with_ext).to_path_buf()
+                        }
+                    };
+
+                    // Check to confirm the file doesn't already exist. Re-prompt
+                    // if it does.
+                    if new_file_path.exists() {
+                        clear(stdout);
+                        write!(
+                            stdout,
+                            "File {} already exists",
+                            new_file_path.to_str().expect("file path is present")
+                        )
+                        .unwrap();
+                        stdout.flush().expect("Could not write output");
+                        thread::sleep(time::Duration::from_secs(1));
+                        continue;
+                    }
+
+                    // If we can't get a string and/or the file can't be created, time to
+                    // panic.
+                    new_file_path.to_str().expect("Invalid file path");
+                    fs::File::create(new_file_path).expect("Could not create file. Exiting.");
+                    state.set_mode(AppState::NavigatingFiles);
+                    break;
+                }
             }
             Key::Char('\n') => {
                 let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
@@ -211,22 +249,6 @@ fn navigate<W: Write>(
         file_entries = files.map(|entry| entry.unwrap()).collect();
         display_file_list(stdout, &file_entries, state.selected_index());
     }
-}
-
-fn prompt(
-    stdout: &mut RawTerminal<Stdout>,
-    stdin: &std::io::Stdin,
-    prompt_string: String,
-    value: &mut String,
-) {
-    stdout.suspend_raw_mode().unwrap();
-    clear(stdout);
-    write!(stdout, "{}", prompt_string).unwrap();
-    let mut buffer = String::new();
-    stdout.flush().unwrap();
-    stdin.read_line(&mut buffer).unwrap();
-    *value = buffer.trim().to_string();
-    stdout.activate_raw_mode().unwrap();
 }
 
 fn main() {
@@ -268,72 +290,16 @@ fn main() {
 
         let mut state = NavigationState::new(0, AppState::NavigatingFiles);
 
+        // Main application loop
         loop {
             match state.mode() {
                 AppState::NavigatingFiles => {
                     // Show file navigation screen
-                    navigate(notes_directory, &mut state, &mut stdout, &stdin);
-                }
-                AppState::PromptForNewFileName => {
-                    // Show filename prompt and create new file
-                    let mut file_name = String::new();
-
-                    // Prompt in a loop, only exiting if we create a valid file.
-                    loop {
-                        prompt(
-                            &mut stdout,
-                            &stdin,
-                            String::from("Enter a name for your new note file: "),
-                            &mut file_name,
-                        );
-
-                        // Check for empty entry.  Re-prompt if it is.
-                        if file_name.is_empty() {
-                            clear(&mut stdout);
-                            write!(stdout, "File name empty. Try again, bro.").unwrap();
-                            stdout.flush().expect("Could not write output");
-                            thread::sleep(time::Duration::from_secs(1));
-                            continue;
-                        }
-
-                        let new_file_path = format!("{}{}", notes_directory, file_name);
-                        let new_file_path = Path::new(&new_file_path);
-
-                        // Check for a valid extension and add one if there isn't one.
-                        let new_file_path = match new_file_path.extension() {
-                            // TODO maybe check from a list of valid extensions?
-                            Some(_) => new_file_path.to_path_buf(),
-                            None => {
-                                let path_with_ext =
-                                    new_file_path.to_str().unwrap().to_owned() + ".txt";
-                                Path::new(&path_with_ext).to_path_buf()
-                            }
-                        };
-
-                        // Check to confirm the file doesn't already exist. Re-prompt
-                        // if it does.
-                        if new_file_path.exists() {
-                            clear(&mut stdout);
-                            write!(
-                                stdout,
-                                "File {} already exists",
-                                new_file_path.to_str().expect("file path is present")
-                            )
-                            .unwrap();
-                            stdout.flush().expect("Could not write output");
-                            thread::sleep(time::Duration::from_secs(1));
-                            continue;
-                        }
-
-                        // If we can't get a string and/or the file can't be created, time to
-                        // panic.
-                        new_file_path.to_str().expect("Invalid file path");
-                        fs::File::create(new_file_path).expect("Could not create file. Exiting.");
-                        state.set_mode(AppState::NavigatingFiles);
-                    }
+                    show_file_navigation(notes_directory, &mut state, &mut stdout, &stdin);
                 }
                 AppState::Quitting => {
                     // Exit the program
+                    clear(&mut stdout);
                     break;
                 }
             }
