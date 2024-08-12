@@ -36,6 +36,42 @@ struct NavigationState {
     mode: AppState,
 }
 
+impl NavigationState {
+    fn new(selected_index: usize, mode: AppState) -> Self {
+        NavigationState {
+            selected_index,
+            mode,
+        }
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    fn set_selected_index(&mut self, new_index: usize) {
+        self.selected_index = new_index;
+    }
+
+    fn mode(&self) -> &AppState {
+        &self.mode
+    }
+
+    fn set_mode(&mut self, mode: AppState) {
+        self.mode = mode;
+    }
+}
+
+fn clear<W: Write>(stdout: &mut W) {
+    write!(
+        stdout,
+        "{}{}{}",
+        termion::clear::All,
+        cursor::Goto(1, 1),
+        cursor::Show
+    )
+    .unwrap();
+}
+
 fn launch_editor(filename: &str, editor: &str) {
     Command::new(editor)
         .args([filename])
@@ -62,11 +98,13 @@ fn display_file_list<W: Write>(stdout: &mut W, files: &[std::fs::DirEntry], sele
         if i == selected_index {
             writeln!(
                 stdout,
-                "{goto}{highlight}{file}{reset}",
+                "{goto}{highlight}{fontcolor}{file}{reset_highlight}{reset_fontcolor}",
                 goto = cursor::Goto(1, (i + 2) as u16),
                 highlight = color::Bg(color::White),
+                fontcolor = color::Fg(color::Black),
                 file = entry.path().to_str().unwrap(),
-                reset = color::Bg(color::Reset)
+                reset_highlight = color::Bg(color::Reset),
+                reset_fontcolor = color::Fg(color::Reset)
             )
             .expect("Error writing to stdout");
         } else {
@@ -100,30 +138,25 @@ fn navigate<W: Write>(
 ) {
     let mut files = fs::read_dir(notes_directory).unwrap();
     let mut file_entries: Vec<std::fs::DirEntry> = files.map(|entry| entry.unwrap()).collect();
-    display_file_list(stdout, &file_entries, state.selected_index);
+    display_file_list(stdout, &file_entries, state.selected_index());
 
     for c in stdin.keys() {
         match c.unwrap() {
             Key::Char('j') => {
                 if state.selected_index < file_entries.len() - 1 {
-                    state.selected_index = state.selected_index.saturating_add(1);
+                    let new_index = state.selected_index.saturating_add(1);
+                    state.set_selected_index(new_index);
                 }
             }
             Key::Char('k') => {
                 if state.selected_index > 0 {
-                    state.selected_index = state.selected_index.saturating_sub(1);
+                    let new_index = state.selected_index.saturating_sub(1);
+                    state.set_selected_index(new_index);
                 }
             }
             Key::Char('q') => {
-                write!(
-                    stdout,
-                    "{}{}{}",
-                    termion::clear::All,
-                    cursor::Goto(1, 1),
-                    cursor::Show
-                )
-                .unwrap();
-                state.mode = AppState::Quitting;
+                clear(stdout);
+                state.set_mode(AppState::Quitting);
                 break;
             }
             Key::Char('D') => {
@@ -144,7 +177,7 @@ fn navigate<W: Write>(
                     stdout.flush().unwrap();
                     fs::remove_file(file_to_del).unwrap();
                     thread::sleep(time::Duration::from_secs(1));
-                    state.selected_index = 0;
+                    state.set_selected_index(0);
                 } else {
                     write!(
                         stdout,
@@ -158,13 +191,16 @@ fn navigate<W: Write>(
                 }
             }
             Key::Char('n') => {
-                state.mode = AppState::PromptForNewFileName;
+                state.set_mode(AppState::PromptForNewFileName);
                 break;
             }
             Key::Char('\n') => {
                 let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                 launch_editor(
-                    file_entries[state.selected_index].path().to_str().unwrap(),
+                    file_entries[state.selected_index()]
+                        .path()
+                        .to_str()
+                        .unwrap(),
                     &editor,
                 )
             }
@@ -173,7 +209,7 @@ fn navigate<W: Write>(
 
         files = fs::read_dir(notes_directory).unwrap();
         file_entries = files.map(|entry| entry.unwrap()).collect();
-        display_file_list(stdout, &file_entries, state.selected_index);
+        display_file_list(stdout, &file_entries, state.selected_index());
     }
 }
 
@@ -184,26 +220,25 @@ fn prompt(
     value: &mut String,
 ) {
     stdout.suspend_raw_mode().unwrap();
-    write!(
-        stdout,
-        "{}{}{}{}",
-        termion::clear::All,
-        cursor::Goto(1, 1),
-        cursor::Show,
-        prompt_string
-    )
-    .unwrap();
+    clear(stdout);
+    write!(stdout, "{}", prompt_string).unwrap();
+    let mut buffer = String::new();
     stdout.flush().unwrap();
-    stdin.read_line(value).unwrap();
+    stdin.read_line(&mut buffer).unwrap();
+    *value = buffer.trim().to_string();
     stdout.activate_raw_mode().unwrap();
 }
 
 fn main() {
     let args = Args::parse();
 
-    let notes_directory = "/home/daniel/.notes/";
+    let mut home_dir = home::home_dir().unwrap();
+    home_dir.push(".notes/");
+
+    let notes_directory = home_dir.to_str().unwrap();
     let quick_notes_filename = "default_notes.txt";
     let quick_notes_file_path = format!("{}{}", notes_directory, quick_notes_filename);
+    println!("{}", notes_directory);
 
     if !Path::new(notes_directory).exists() {
         println!("No ~/.notes/ folder exists. Please create it first.");
@@ -231,13 +266,10 @@ fn main() {
         let mut stdout = stdout().into_raw_mode().unwrap();
         let stdin = stdin();
 
-        let mut state = NavigationState {
-            selected_index: 0,
-            mode: AppState::NavigatingFiles,
-        };
+        let mut state = NavigationState::new(0, AppState::NavigatingFiles);
 
         loop {
-            match state.mode {
+            match state.mode() {
                 AppState::NavigatingFiles => {
                     // Show file navigation screen
                     navigate(notes_directory, &mut state, &mut stdout, &stdin);
@@ -245,16 +277,60 @@ fn main() {
                 AppState::PromptForNewFileName => {
                     // Show filename prompt and create new file
                     let mut file_name = String::new();
-                    prompt(
-                        &mut stdout,
-                        &stdin,
-                        String::from("Enter something: "),
-                        &mut file_name,
-                    );
 
-                    fs::File::create(notes_directory.to_owned() + file_name.as_str().trim())
-                        .unwrap();
-                    state.mode = AppState::NavigatingFiles;
+                    // Prompt in a loop, only exiting if we create a valid file.
+                    loop {
+                        prompt(
+                            &mut stdout,
+                            &stdin,
+                            String::from("Enter a name for your new note file: "),
+                            &mut file_name,
+                        );
+
+                        // Check for empty entry.  Re-prompt if it is.
+                        if file_name.is_empty() {
+                            clear(&mut stdout);
+                            write!(stdout, "File name empty. Try again, bro.").unwrap();
+                            stdout.flush().expect("Could not write output");
+                            thread::sleep(time::Duration::from_secs(1));
+                            continue;
+                        }
+
+                        let new_file_path = format!("{}{}", notes_directory, file_name);
+                        let new_file_path = Path::new(&new_file_path);
+
+                        // Check for a valid extension and add one if there isn't one.
+                        let new_file_path = match new_file_path.extension() {
+                            // TODO maybe check from a list of valid extensions?
+                            Some(_) => new_file_path.to_path_buf(),
+                            None => {
+                                let path_with_ext =
+                                    new_file_path.to_str().unwrap().to_owned() + ".txt";
+                                Path::new(&path_with_ext).to_path_buf()
+                            }
+                        };
+
+                        // Check to confirm the file doesn't already exist. Re-prompt
+                        // if it does.
+                        if new_file_path.exists() {
+                            clear(&mut stdout);
+                            write!(
+                                stdout,
+                                "File {} already exists",
+                                new_file_path.to_str().expect("file path is present")
+                            )
+                            .unwrap();
+                            stdout.flush().expect("Could not write output");
+                            thread::sleep(time::Duration::from_secs(1));
+                            continue;
+                        }
+
+                        // If we can't get a string and/or the file can't be created, time to
+                        // panic.
+                        new_file_path.to_str().expect("Invalid file path");
+                        fs::File::create(new_file_path).expect("Could not create file. Exiting.");
+                        state.set_mode(AppState::NavigatingFiles);
+                    }
                 }
                 AppState::Quitting => {
                     // Exit the program

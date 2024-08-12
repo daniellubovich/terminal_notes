@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.38"
 clap = { version = "4.5.9", features = ["derive"] }
+home = "0.5.9"
 termion = "1"
