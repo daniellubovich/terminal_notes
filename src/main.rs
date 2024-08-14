@@ -9,6 +9,9 @@ use std::io::Stdout;
 use std::io::{stdin, stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::channel;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use std::{thread, time};
 use termion::event::Key;
 use termion::input::TermRead;
@@ -251,6 +254,26 @@ fn show_file_navigation(
     }
 }
 
+fn animation_loop(rx: Receiver<String>) {
+    thread::spawn(move || {
+        let _frametime = 1000 / 60;
+        let stdout = stdout().into_raw_mode().unwrap();
+        loop {
+            let mut handle = stdout.lock();
+            let _message = rx.try_recv().unwrap();
+            if _message == "red" {
+                writeln!(handle, "red").unwrap();
+                thread::sleep(time::Duration::from_millis(1000));
+            } else {
+                writeln!(handle, "blue").unwrap();
+                thread::sleep(time::Duration::from_millis(1000));
+            }
+            handle.flush().unwrap();
+            thread::sleep(time::Duration::from_millis(_frametime));
+        }
+    });
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -288,14 +311,19 @@ fn main() {
         let mut stdout = stdout().into_raw_mode().unwrap();
         let stdin = stdin();
 
-        let mut state = NavigationState::new(0, AppState::NavigatingFiles);
+        let state = NavigationState::new(0, AppState::NavigatingFiles);
+
+        let (tx, rx) = channel();
+        animation_loop(rx);
 
         // Main application loop
         loop {
             match state.mode() {
                 AppState::NavigatingFiles => {
                     // Show file navigation screen
-                    show_file_navigation(notes_directory, &mut state, &mut stdout, &stdin);
+                    //show_file_navigation(notes_directory, &mut state, &mut stdout, &stdin);
+                    let _ = tx.send("blue".to_owned());
+                    thread::sleep(time::Duration::from_millis(1000));
                 }
                 AppState::Quitting => {
                     // Exit the program
