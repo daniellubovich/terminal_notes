@@ -9,6 +9,7 @@ use std::io::Stdout;
 use std::io::{stdin, stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::SystemTime;
 use std::{thread, time};
 use termion::event::Key;
 use termion::input::TermRead;
@@ -34,6 +35,24 @@ struct Args {
 struct NavigationState {
     selected_index: usize,
     mode: AppState,
+}
+
+struct NoteEntry {
+    path: String,
+    name: String,
+    modified: SystemTime,
+    is_default: bool,
+}
+
+impl NoteEntry {
+    fn new(path: String, name: String, modified: SystemTime, is_default: bool) -> Self {
+        NoteEntry {
+            path,
+            name,
+            modified,
+            is_default,
+        }
+    }
 }
 
 impl NavigationState {
@@ -70,7 +89,7 @@ fn launch_editor(filename: &str, editor: &str) {
         .expect("Failed to launch editor.");
 }
 
-fn display_file_list<W: Write>(stdout: &mut W, files: &[std::fs::DirEntry], selected_index: usize) {
+fn display_file_list<W: Write>(stdout: &mut W, files: &[NoteEntry], selected_index: usize) {
     // Clear terminal and prepare to list out files
     writeln!(
         stdout,
@@ -87,11 +106,12 @@ fn display_file_list<W: Write>(stdout: &mut W, files: &[std::fs::DirEntry], sele
         if i == selected_index {
             writeln!(
                 stdout,
-                "{goto}{highlight}{fontcolor}{file}{reset_highlight}{reset_fontcolor}",
+                "{goto}{highlight}{fontcolor}{file}{default_indicator}{reset_highlight}{reset_fontcolor}",
                 goto = cursor::Goto(1, (i + 2) as u16),
                 highlight = color::Bg(color::White),
                 fontcolor = color::Fg(color::Black),
-                file = entry.path().to_str().unwrap(),
+                file = entry.name,
+                default_indicator = if entry.is_default { "  [Default]".to_owned() } else { String::new() },
                 reset_highlight = color::Bg(color::Reset),
                 reset_fontcolor = color::Fg(color::Reset)
             )
@@ -99,9 +119,14 @@ fn display_file_list<W: Write>(stdout: &mut W, files: &[std::fs::DirEntry], sele
         } else {
             writeln!(
                 stdout,
-                "{goto}{file}",
+                "{goto}{file}{default_indicator}",
                 goto = cursor::Goto(1, (i + 2) as u16),
-                file = entry.path().to_str().unwrap()
+                default_indicator = if entry.is_default {
+                    "  [Default]".to_owned()
+                } else {
+                    String::new()
+                },
+                file = entry.name
             )
             .expect("Error writing to stdout");
         }
@@ -126,7 +151,26 @@ fn show_file_navigation(
     stdin: &std::io::Stdin,
 ) {
     let mut files = fs::read_dir(notes_directory).unwrap();
-    let mut file_entries: Vec<std::fs::DirEntry> = files.map(|entry| entry.unwrap()).collect();
+    let mut file_entries: Vec<NoteEntry> = files
+        .map(|entry| {
+            let file = entry.unwrap();
+            let name = file.file_name().to_str().unwrap().to_owned();
+            let path = file.path().to_str().unwrap().to_owned();
+            let is_default = name == "default_notes.txt";
+            NoteEntry::new(
+                path,
+                name,
+                file.metadata().unwrap().modified().unwrap(),
+                is_default,
+            )
+        })
+        .collect();
+    file_entries.sort_by(|a, b| {
+        let a_ts = a.modified;
+        let b_ts = b.modified;
+        a_ts.cmp(&b_ts)
+    });
+
     display_file_list(stdout, &file_entries, state.selected_index());
 
     for c in stdin.keys() {
@@ -148,11 +192,7 @@ fn show_file_navigation(
                 break;
             }
             Key::Char('D') => {
-                let file_to_del = file_entries[state.selected_index]
-                    .path()
-                    .to_str()
-                    .expect("valid filename")
-                    .to_owned();
+                let file_to_del = &file_entries[state.selected_index].path;
 
                 if !file_to_del.contains("default_notes.txt") {
                     if prompt_yesno(
@@ -161,7 +201,9 @@ fn show_file_navigation(
                         format!("Are you sure you want to delete {}? [y/N] ", file_to_del),
                     ) {
                         fs::remove_file(file_to_del).expect("Could not delete file.");
-                        state.set_selected_index(0);
+                        if state.selected_index() > file_entries.len() - 2 {
+                            state.set_selected_index(state.selected_index.saturating_sub(1));
+                        }
                     }
                 } else {
                     write!(
@@ -234,19 +276,31 @@ fn show_file_navigation(
             }
             Key::Char('\n') => {
                 let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                launch_editor(
-                    file_entries[state.selected_index()]
-                        .path()
-                        .to_str()
-                        .unwrap(),
-                    &editor,
-                )
+                launch_editor(&file_entries[state.selected_index()].path, &editor)
             }
             _ => {}
         }
 
         files = fs::read_dir(notes_directory).unwrap();
-        file_entries = files.map(|entry| entry.unwrap()).collect();
+        file_entries = files
+            .map(|entry| {
+                let file = entry.unwrap();
+                let name = file.file_name().to_str().unwrap().to_owned();
+                let path = file.path().to_str().unwrap().to_owned();
+                let is_default = name == "default_notes.txt";
+                NoteEntry::new(
+                    path,
+                    name,
+                    file.metadata().unwrap().modified().unwrap(),
+                    is_default,
+                )
+            })
+            .collect();
+        file_entries.sort_by(|a, b| {
+            let a_ts = a.modified;
+            let b_ts = b.modified;
+            a_ts.cmp(&b_ts)
+        });
         display_file_list(stdout, &file_entries, state.selected_index());
     }
 }
