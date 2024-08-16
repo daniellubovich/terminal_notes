@@ -271,6 +271,7 @@ fn show_file_navigation(
                     new_file_path.to_str().expect("Invalid file path");
                     fs::File::create(new_file_path).expect("Could not create file. Exiting.");
                     state.set_mode(AppState::NavigatingFiles);
+                    state.set_selected_index(state.selected_index().saturating_add(1));
                     break;
                 }
             }
