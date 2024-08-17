@@ -16,6 +16,8 @@ use termion::input::TermRead;
 use termion::raw::IntoRawMode;
 use termion::raw::RawTerminal;
 use termion::{color, cursor};
+use toml::Table;
+use toml::Value;
 
 enum AppState {
     NavigatingFiles,
@@ -30,6 +32,46 @@ struct Args {
 
     #[arg(last = true)]
     quick_note: Vec<String>,
+}
+
+struct Config {
+    notes_directory: String,
+    default_notes_file: String,
+}
+
+impl Config {
+    fn new(config: toml::Table) -> Self {
+        let mut default_notes_dir = home::home_dir().unwrap();
+        default_notes_dir.push(".notes/");
+        let default_notes_dir = Value::String(default_notes_dir.to_str().unwrap().to_string());
+        let notes_directory = config
+            .get("notes_directory")
+            .unwrap_or(&default_notes_dir)
+            .as_str();
+
+        let default_notes_file = Value::String("default_notes.txt".to_string());
+        let default_notes_file = config
+            .get("default_notes_file")
+            .unwrap_or(&default_notes_file)
+            .as_str();
+
+        Config {
+            notes_directory: notes_directory.unwrap().to_owned(),
+            default_notes_file: default_notes_file.unwrap().to_owned(),
+        }
+    }
+
+    fn get_default_notes_path(&self) -> String {
+        format!("{}{}", self.notes_directory, self.default_notes_file)
+    }
+
+    fn get_default_notes_file(&self) -> &str {
+        &self.default_notes_file
+    }
+
+    fn get_notes_directory(&self) -> &str {
+        &self.notes_directory
+    }
 }
 
 struct NavigationState {
@@ -149,6 +191,7 @@ fn show_file_navigation(
     state: &mut NavigationState,
     stdout: &mut RawTerminal<Stdout>,
     stdin: &std::io::Stdin,
+    config: &Config,
 ) {
     let mut files = fs::read_dir(notes_directory).unwrap();
     let mut file_entries: Vec<NoteEntry> = files
@@ -156,7 +199,7 @@ fn show_file_navigation(
             let file = entry.unwrap();
             let name = file.file_name().to_str().unwrap().to_owned();
             let path = file.path().to_str().unwrap().to_owned();
-            let is_default = name == "default_notes.txt";
+            let is_default = name == config.get_default_notes_file();
             NoteEntry::new(
                 path,
                 name,
@@ -194,7 +237,7 @@ fn show_file_navigation(
             Key::Char('D') => {
                 let file_to_del = &file_entries[state.selected_index].path;
 
-                if !file_to_del.contains("default_notes.txt") {
+                if !file_to_del.contains(config.get_default_notes_file()) {
                     if prompt_yesno(
                         stdout,
                         stdin,
@@ -288,7 +331,7 @@ fn show_file_navigation(
                 let file = entry.unwrap();
                 let name = file.file_name().to_str().unwrap().to_owned();
                 let path = file.path().to_str().unwrap().to_owned();
-                let is_default = name == "default_notes.txt";
+                let is_default = name == config.get_default_notes_file();
                 NoteEntry::new(
                     path,
                     name,
@@ -309,20 +352,37 @@ fn show_file_navigation(
 fn main() {
     let args = Args::parse();
 
-    let mut home_dir = home::home_dir().unwrap();
-    home_dir.push(".notes/");
+    // Get the config file
+    let mut config_file = home::home_dir().unwrap();
+    config_file.push(".noteconfig");
+    let config = match config_file.to_str() {
+        Some(file) => {
+            let config = match std::fs::read_to_string(file) {
+                Ok(file) => file.parse::<Table>().unwrap(),
+                _ => Table::new(),
+            };
 
-    let notes_directory = home_dir.to_str().unwrap();
-    let quick_notes_filename = "default_notes.txt";
-    let quick_notes_file_path = format!("{}{}", notes_directory, quick_notes_filename);
-    println!("{}", notes_directory);
+            Config::new(config)
+        }
+        None => Config::new(Table::new()),
+    };
 
-    if !Path::new(notes_directory).exists() {
-        println!("No ~/.notes/ folder exists. Please create it first.");
+    // Get the notes dir
+    let notes_directory = config.get_notes_directory();
+    let quick_notes_file_path = config.get_default_notes_path();
+
+    if !Path::new(&notes_directory).exists() {
+        println!(
+            "No {} folder exists. Please create it first.",
+            notes_directory
+        );
         return;
     }
     if !Path::new(&quick_notes_file_path).exists() {
-        println!("No ~/.notes/default_notes.txt file exists. Please create it first.");
+        println!(
+            "No {} file exists. Please create it first.",
+            quick_notes_file_path
+        );
         return;
     }
 
@@ -350,7 +410,7 @@ fn main() {
             match state.mode() {
                 AppState::NavigatingFiles => {
                     // Show file navigation screen
-                    show_file_navigation(notes_directory, &mut state, &mut stdout, &stdin);
+                    show_file_navigation(notes_directory, &mut state, &mut stdout, &stdin, &config);
                 }
                 AppState::Quitting => {
                     // Exit the program
