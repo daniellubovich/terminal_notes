@@ -5,6 +5,7 @@ use clap::Parser;
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io;
 use std::io::Stdout;
 use std::io::{stdin, stdout, Write};
 use std::path::Path;
@@ -131,8 +132,13 @@ fn launch_editor(filename: &str, editor: &str) {
         .expect("Failed to launch editor.");
 }
 
-fn display_file_list<W: Write>(stdout: &mut W, files: &[NoteEntry], selected_index: usize) {
+fn display_file_list<W: Write>(
+    stdout: &mut W,
+    files: &[NoteEntry],
+    selected_index: usize,
+) -> io::Result<()> {
     // Clear terminal and prepare to list out files
+    // This function just bubbles up IO errors to let the implementer handle whether to panic.
     writeln!(
         stdout,
         "{clear}{goto}{color}Notes Files:{reset}",
@@ -140,8 +146,7 @@ fn display_file_list<W: Write>(stdout: &mut W, files: &[NoteEntry], selected_ind
         goto = cursor::Goto(1, 1),
         color = color::Fg(color::Yellow),
         reset = color::Fg(color::Reset)
-    )
-    .unwrap();
+    )?;
 
     for (i, f) in files.iter().enumerate() {
         let entry = f;
@@ -156,8 +161,7 @@ fn display_file_list<W: Write>(stdout: &mut W, files: &[NoteEntry], selected_ind
                 default_indicator = if entry.is_default { "  [Default]".to_owned() } else { String::new() },
                 reset_highlight = color::Bg(color::Reset),
                 reset_fontcolor = color::Fg(color::Reset)
-            )
-            .expect("Error writing to stdout");
+            )?
         } else {
             writeln!(
                 stdout,
@@ -169,31 +173,24 @@ fn display_file_list<W: Write>(stdout: &mut W, files: &[NoteEntry], selected_ind
                     String::new()
                 },
                 file = entry.name
-            )
-            .expect("Error writing to stdout");
+            )?
         }
     }
 
     // Print the command prompt at the bottom of the terminal.
-    let (_, h) = termion::terminal_size().unwrap();
+    let (_, h) = termion::terminal_size()?;
     write!(stdout, "{hide}", hide = cursor::Hide).unwrap();
     write!(
         stdout,
         "{goto}New file [n]; Delete file [D]",
         goto = cursor::Goto(1, h)
-    )
-    .unwrap();
-    stdout.flush().unwrap();
+    )?;
+    stdout.flush()?;
+    Ok(())
 }
 
-fn show_file_navigation(
-    notes_directory: &str,
-    state: &mut NavigationState,
-    stdout: &mut RawTerminal<Stdout>,
-    stdin: &std::io::Stdin,
-    config: &Config,
-) {
-    let mut files = fs::read_dir(notes_directory).unwrap();
+fn get_notes_entries(config: &Config) -> Vec<NoteEntry> {
+    let files = fs::read_dir(&config.notes_directory).unwrap();
     let mut file_entries: Vec<NoteEntry> = files
         .map(|entry| {
             let file = entry.unwrap();
@@ -211,10 +208,20 @@ fn show_file_navigation(
     file_entries.sort_by(|a, b| {
         let a_ts = a.modified;
         let b_ts = b.modified;
-        a_ts.cmp(&b_ts)
+        b_ts.cmp(&a_ts)
     });
+    file_entries
+}
 
-    display_file_list(stdout, &file_entries, state.selected_index());
+fn show_file_navigation(
+    notes_directory: &str,
+    state: &mut NavigationState,
+    stdout: &mut RawTerminal<Stdout>,
+    stdin: &std::io::Stdin,
+    config: &Config,
+) -> io::Result<()> {
+    let mut file_entries = get_notes_entries(config);
+    display_file_list(stdout, &file_entries, state.selected_index())?;
 
     for c in stdin.keys() {
         match c.unwrap() {
@@ -254,9 +261,8 @@ fn show_file_navigation(
                         "{}{}Cannot delete your default notes file.",
                         termion::clear::All,
                         cursor::Goto(1, 1),
-                    )
-                    .unwrap();
-                    stdout.flush().unwrap();
+                    )?;
+                    stdout.flush()?;
                     thread::sleep(time::Duration::from_secs(1));
                 }
             }
@@ -275,8 +281,8 @@ fn show_file_navigation(
                     // Check for empty entry.  Re-prompt if it is.
                     if file_name.is_empty() {
                         clear(stdout);
-                        write!(stdout, "File name empty. Try again, bro.").unwrap();
-                        stdout.flush().expect("Could not write output");
+                        write!(stdout, "File name empty. Try again, bro.")?;
+                        stdout.flush()?;
                         thread::sleep(time::Duration::from_secs(1));
                         continue;
                     }
@@ -302,9 +308,8 @@ fn show_file_navigation(
                             stdout,
                             "File {} already exists",
                             new_file_path.to_str().expect("file path is present")
-                        )
-                        .unwrap();
-                        stdout.flush().expect("Could not write output");
+                        )?;
+                        stdout.flush()?;
                         thread::sleep(time::Duration::from_secs(1));
                         continue;
                     }
@@ -314,7 +319,7 @@ fn show_file_navigation(
                     new_file_path.to_str().expect("Invalid file path");
                     fs::File::create(new_file_path).expect("Could not create file. Exiting.");
                     state.set_mode(AppState::NavigatingFiles);
-                    state.set_selected_index(state.selected_index().saturating_add(1));
+                    state.set_selected_index(0);
                     break;
                 }
             }
@@ -325,52 +330,42 @@ fn show_file_navigation(
             _ => {}
         }
 
-        files = fs::read_dir(notes_directory).unwrap();
-        file_entries = files
-            .map(|entry| {
-                let file = entry.unwrap();
-                let name = file.file_name().to_str().unwrap().to_owned();
-                let path = file.path().to_str().unwrap().to_owned();
-                let is_default = name == config.get_default_notes_file();
-                NoteEntry::new(
-                    path,
-                    name,
-                    file.metadata().unwrap().modified().unwrap(),
-                    is_default,
-                )
-            })
-            .collect();
-        file_entries.sort_by(|a, b| {
-            let a_ts = a.modified;
-            let b_ts = b.modified;
-            a_ts.cmp(&b_ts)
-        });
-        display_file_list(stdout, &file_entries, state.selected_index());
+        file_entries = get_notes_entries(config);
+        display_file_list(stdout, &file_entries, state.selected_index())?;
     }
+
+    Ok(())
 }
 
 fn main() {
     let args = Args::parse();
 
     // Get the config file
-    let mut config_file = home::home_dir().unwrap();
+    let mut config_file = home::home_dir().unwrap_or_default();
     config_file.push(".noteconfig");
+
     let config = match config_file.to_str() {
         Some(file) => {
             let config = match std::fs::read_to_string(file) {
-                Ok(file) => file.parse::<Table>().unwrap(),
+                Ok(file) => match file.parse::<Table>() {
+                    Ok(table) => table,
+                    _ => {
+                        panic!("Unable to parse config file. Make sure it is valid toml.");
+                    }
+                },
                 _ => Table::new(),
             };
 
             Config::new(config)
         }
-        None => Config::new(Table::new()),
+        None => {
+            panic!("Unable to find home directory. Something is very wrong :(")
+        }
     };
 
-    // Get the notes dir
+    // Check the notes dir and default file exist
     let notes_directory = config.get_notes_directory();
     let quick_notes_file_path = config.get_default_notes_path();
-
     if !Path::new(&notes_directory).exists() {
         println!(
             "No {} folder exists. Please create it first.",
@@ -400,9 +395,14 @@ fn main() {
         file.write_all(quick_note.as_bytes())
             .expect("it wrote quick note to file");
     } else if args.edit {
-        let mut stdout = stdout().into_raw_mode().unwrap();
-        let stdin = stdin();
+        let mut stdout = match stdout().into_raw_mode() {
+            Ok(w) => w,
+            _ => {
+                panic!("Could not open stdout. Something went very wrong")
+            }
+        };
 
+        let stdin = stdin();
         let mut state = NavigationState::new(0, AppState::NavigatingFiles);
 
         // Main application loop
@@ -410,7 +410,20 @@ fn main() {
             match state.mode() {
                 AppState::NavigatingFiles => {
                     // Show file navigation screen
-                    show_file_navigation(notes_directory, &mut state, &mut stdout, &stdin, &config);
+                    match show_file_navigation(
+                        notes_directory,
+                        &mut state,
+                        &mut stdout,
+                        &stdin,
+                        &config,
+                    ) {
+                        Ok(_) => {
+                            // If we didn't fail to run, just continue implicitly.
+                        }
+                        Err(e) => {
+                            panic!("{}", e);
+                        }
+                    }
                 }
                 AppState::Quitting => {
                     // Exit the program
