@@ -57,8 +57,8 @@ impl Config {
             .as_str();
 
         Config {
-            notes_directory: notes_directory.unwrap().to_owned(),
-            default_notes_file: default_notes_file.unwrap().to_owned(),
+            notes_directory: _expand_homedir(notes_directory.unwrap().to_owned()),
+            default_notes_file: _expand_homedir(default_notes_file.unwrap().to_owned()),
         }
     }
 
@@ -120,6 +120,16 @@ impl NavigationState {
 
     fn set_mode(&mut self, mode: AppState) {
         self.mode = mode;
+    }
+}
+
+fn _expand_homedir(path: String) -> String {
+    if path.starts_with('~') {
+        let home_dir =
+            home::home_dir().expect("Could not evaluate home directory. That's not good.");
+        path.replacen('~', home_dir.to_str().unwrap(), 1)
+    } else {
+        path
     }
 }
 
