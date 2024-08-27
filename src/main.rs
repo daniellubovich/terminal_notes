@@ -200,7 +200,7 @@ fn display_file_list<W: Write>(
     write!(stdout, "{hide}", hide = cursor::Hide).unwrap();
     write!(
         stdout,
-        "{goto}New file [n]; Delete file [D]",
+        "{goto}New file [n]; Delete file [D]; Quit [q]",
         goto = cursor::Goto(1, h)
     )?;
     stdout.flush()?;
