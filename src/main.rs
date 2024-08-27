@@ -259,6 +259,68 @@ fn show_file_navigation(
                 state.set_mode(AppState::Quitting);
                 break;
             }
+            Key::Char('r') => {
+                let mut file_name = String::new();
+
+                loop {
+                    // Prompt in a loop, only exiting if we create a valid file.
+                    prompt(
+                        stdout,
+                        stdin,
+                        format!(
+                            "Enter a new name note file {}: ",
+                            file_entries[state.selected_index()].name,
+                        ),
+                        &mut file_name,
+                    );
+
+                    // Check for empty entry.  Re-prompt if it is.
+                    if file_name.is_empty() {
+                        clear(stdout);
+                        write!(stdout, "File name empty. Try again, bro.")?;
+                        stdout.flush()?;
+                        thread::sleep(time::Duration::from_secs(1));
+                        continue;
+                    }
+
+                    let new_file_path = format!("{}{}", notes_directory, file_name);
+                    let new_file_path = Path::new(&new_file_path);
+
+                    // Check for a valid extension and add one if there isn't one.
+                    let new_file_path = match new_file_path.extension() {
+                        // TODO maybe check from a list of valid extensions?
+                        Some(_) => new_file_path.to_path_buf(),
+                        None => {
+                            let path_with_ext = new_file_path.to_str().unwrap().to_owned()
+                                + &config.default_file_extension;
+                            Path::new(&path_with_ext).to_path_buf()
+                        }
+                    };
+
+                    // Check to confirm the file doesn't already exist. Re-prompt
+                    // if it does.
+                    if new_file_path.exists() {
+                        clear(stdout);
+                        write!(
+                            stdout,
+                            "File {} already exists",
+                            new_file_path.to_str().expect("file path is present")
+                        )?;
+                        stdout.flush()?;
+                        thread::sleep(time::Duration::from_secs(1));
+                        continue;
+                    }
+
+                    // If we can't get a string and/or the file can't be created, time to
+                    // panic.
+                    new_file_path.to_str().expect("Invalid file path");
+                    let old_file_path = file_entries[state.selected_index()].path.clone();
+                    fs::rename(old_file_path, new_file_path).unwrap();
+                    state.set_mode(AppState::NavigatingFiles);
+                    state.set_selected_index(0);
+                    break;
+                }
+            }
             Key::Char('D') => {
                 let file_to_del = &file_entries[state.selected_index].path;
 
