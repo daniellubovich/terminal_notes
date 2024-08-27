@@ -38,6 +38,7 @@ struct Args {
 struct Config {
     notes_directory: String,
     default_notes_file: String,
+    default_file_extension: String,
 }
 
 impl Config {
@@ -56,9 +57,16 @@ impl Config {
             .unwrap_or(&default_notes_file)
             .as_str();
 
+        let default_file_extension = Value::String(".txt".to_string());
+        let default_file_extension = config
+            .get("default_file_extension")
+            .unwrap_or(&default_file_extension)
+            .as_str();
+
         Config {
             notes_directory: _expand_homedir(notes_directory.unwrap().to_owned()),
             default_notes_file: _expand_homedir(default_notes_file.unwrap().to_owned()),
+            default_file_extension: default_file_extension.unwrap().to_owned(),
         }
     }
 
@@ -305,7 +313,8 @@ fn show_file_navigation(
                         // TODO maybe check from a list of valid extensions?
                         Some(_) => new_file_path.to_path_buf(),
                         None => {
-                            let path_with_ext = new_file_path.to_str().unwrap().to_owned() + ".txt";
+                            let path_with_ext = new_file_path.to_str().unwrap().to_owned()
+                                + &config.default_file_extension;
                             Path::new(&path_with_ext).to_path_buf()
                         }
                     };
