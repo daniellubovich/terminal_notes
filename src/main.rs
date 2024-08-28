@@ -140,7 +140,7 @@ fn display_file_list<W: Write>(
 }
 
 fn get_notes_entries(config: &Config) -> Vec<NoteEntry> {
-    let files = fs::read_dir(&config.get_notes_directory()).unwrap();
+    let files = fs::read_dir(config.get_notes_directory()).unwrap();
     let mut file_entries: Vec<NoteEntry> = files
         .map(|entry| {
             let file = entry.unwrap();
@@ -223,7 +223,7 @@ fn show_file_navigation(
                         Some(_) => new_file_path.to_path_buf(),
                         None => {
                             let path_with_ext = new_file_path.to_str().unwrap().to_owned()
-                                + &config.get_default_file_extension();
+                                + config.get_default_file_extension();
                             Path::new(&path_with_ext).to_path_buf()
                         }
                     };
@@ -306,7 +306,7 @@ fn show_file_navigation(
                         Some(_) => new_file_path.to_path_buf(),
                         None => {
                             let path_with_ext = new_file_path.to_str().unwrap().to_owned()
-                                + &config.get_default_file_extension();
+                                + config.get_default_file_extension();
                             Path::new(&path_with_ext).to_path_buf()
                         }
                     };
