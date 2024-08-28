@@ -1,4 +1,6 @@
+mod config;
 mod prompt;
+use crate::config::Config;
 use crate::prompt::{clear, prompt, prompt_yesno};
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -18,74 +20,25 @@ use termion::raw::IntoRawMode;
 use termion::raw::RawTerminal;
 use termion::{color, cursor};
 use toml::Table;
-use toml::Value;
-
-enum AppState {
-    NavigatingFiles,
-    Quitting,
-}
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short = 'e', long, default_value_t = true)]
-    edit: bool,
+    #[arg(
+        short = 'g',
+        long,
+        default_value_t = false,
+        exclusive = true,
+        help = "Generate a default configuration toml to be used in ~/.noteconfig"
+    )]
+    generate_config: bool,
 
     #[arg(last = true)]
     quick_note: Vec<String>,
 }
 
-struct Config {
-    notes_directory: String,
-    default_notes_file: String,
-    default_file_extension: String,
-}
-
-impl Config {
-    fn new(config: toml::Table) -> Self {
-        let mut default_notes_dir = home::home_dir().unwrap();
-        default_notes_dir.push(".notes/");
-        let default_notes_dir = Value::String(default_notes_dir.to_str().unwrap().to_string());
-        let notes_directory = config
-            .get("notes_directory")
-            .unwrap_or(&default_notes_dir)
-            .as_str();
-
-        let default_notes_file = Value::String("default_notes.txt".to_string());
-        let default_notes_file = config
-            .get("default_notes_file")
-            .unwrap_or(&default_notes_file)
-            .as_str();
-
-        let default_file_extension = Value::String(".txt".to_string());
-        let default_file_extension = config
-            .get("default_file_extension")
-            .unwrap_or(&default_file_extension)
-            .as_str();
-
-        Config {
-            notes_directory: _expand_homedir(notes_directory.unwrap().to_owned()),
-            default_notes_file: _expand_homedir(default_notes_file.unwrap().to_owned()),
-            default_file_extension: default_file_extension.unwrap().to_owned(),
-        }
-    }
-
-    fn get_default_notes_path(&self) -> String {
-        format!("{}{}", self.notes_directory, self.default_notes_file)
-    }
-
-    fn get_default_notes_file(&self) -> &str {
-        &self.default_notes_file
-    }
-
-    fn get_notes_directory(&self) -> &str {
-        &self.notes_directory
-    }
-}
-
 struct NavigationState {
     selected_index: usize,
-    mode: AppState,
 }
 
 struct NoteEntry {
@@ -107,11 +60,8 @@ impl NoteEntry {
 }
 
 impl NavigationState {
-    fn new(selected_index: usize, mode: AppState) -> Self {
-        NavigationState {
-            selected_index,
-            mode,
-        }
+    fn new(selected_index: usize) -> Self {
+        NavigationState { selected_index }
     }
 
     fn selected_index(&self) -> usize {
@@ -120,24 +70,6 @@ impl NavigationState {
 
     fn set_selected_index(&mut self, new_index: usize) {
         self.selected_index = new_index;
-    }
-
-    fn mode(&self) -> &AppState {
-        &self.mode
-    }
-
-    fn set_mode(&mut self, mode: AppState) {
-        self.mode = mode;
-    }
-}
-
-fn _expand_homedir(path: String) -> String {
-    if path.starts_with('~') {
-        let home_dir =
-            home::home_dir().expect("Could not evaluate home directory. That's not good.");
-        path.replacen('~', home_dir.to_str().unwrap(), 1)
-    } else {
-        path
     }
 }
 
@@ -208,7 +140,7 @@ fn display_file_list<W: Write>(
 }
 
 fn get_notes_entries(config: &Config) -> Vec<NoteEntry> {
-    let files = fs::read_dir(&config.notes_directory).unwrap();
+    let files = fs::read_dir(&config.get_notes_directory()).unwrap();
     let mut file_entries: Vec<NoteEntry> = files
         .map(|entry| {
             let file = entry.unwrap();
@@ -256,7 +188,6 @@ fn show_file_navigation(
                 }
             }
             Key::Char('q') => {
-                state.set_mode(AppState::Quitting);
                 break;
             }
             Key::Char('r') => {
@@ -292,7 +223,7 @@ fn show_file_navigation(
                         Some(_) => new_file_path.to_path_buf(),
                         None => {
                             let path_with_ext = new_file_path.to_str().unwrap().to_owned()
-                                + &config.default_file_extension;
+                                + &config.get_default_file_extension();
                             Path::new(&path_with_ext).to_path_buf()
                         }
                     };
@@ -316,7 +247,6 @@ fn show_file_navigation(
                     new_file_path.to_str().expect("Invalid file path");
                     let old_file_path = file_entries[state.selected_index()].path.clone();
                     fs::rename(old_file_path, new_file_path).unwrap();
-                    state.set_mode(AppState::NavigatingFiles);
                     state.set_selected_index(0);
                     break;
                 }
@@ -376,7 +306,7 @@ fn show_file_navigation(
                         Some(_) => new_file_path.to_path_buf(),
                         None => {
                             let path_with_ext = new_file_path.to_str().unwrap().to_owned()
-                                + &config.default_file_extension;
+                                + &config.get_default_file_extension();
                             Path::new(&path_with_ext).to_path_buf()
                         }
                     };
@@ -399,7 +329,6 @@ fn show_file_navigation(
                     // panic.
                     new_file_path.to_str().expect("Invalid file path");
                     fs::File::create(new_file_path).expect("Could not create file. Exiting.");
-                    state.set_mode(AppState::NavigatingFiles);
                     state.set_selected_index(0);
                     break;
                 }
@@ -420,6 +349,11 @@ fn show_file_navigation(
 
 fn main() {
     let args = Args::parse();
+
+    if args.generate_config {
+        println!("{}", &Config::generate());
+        return;
+    }
 
     // Get the config file
     let mut config_file = home::home_dir().unwrap_or_default();
@@ -475,7 +409,7 @@ fn main() {
 
         file.write_all(quick_note.as_bytes())
             .expect("it wrote quick note to file");
-    } else if args.edit {
+    } else {
         let mut stdout = match stdout().into_raw_mode() {
             Ok(w) => w,
             _ => {
@@ -484,36 +418,18 @@ fn main() {
         };
 
         let stdin = stdin();
-        let mut state = NavigationState::new(0, AppState::NavigatingFiles);
+        let mut state = NavigationState::new(0);
 
         // Main application loop
-        loop {
-            match state.mode() {
-                AppState::NavigatingFiles => {
-                    // Show file navigation screen
-                    match show_file_navigation(
-                        notes_directory,
-                        &mut state,
-                        &mut stdout,
-                        &stdin,
-                        &config,
-                    ) {
-                        Ok(_) => {
-                            // If we didn't fail to run, just continue implicitly.
-                        }
-                        Err(e) => {
-                            panic!("{}", e);
-                        }
-                    }
-                }
-                AppState::Quitting => {
-                    // Exit the program
-                    clear(&mut stdout);
-                    break;
-                }
+        // Show file navigation screen
+        match show_file_navigation(notes_directory, &mut state, &mut stdout, &stdin, &config) {
+            Ok(_) => {
+                // If we didn't fail to run, just continue implicitly.
+                clear(&mut stdout);
+            }
+            Err(e) => {
+                panic!("{}", e);
             }
         }
-    } else {
-        println!("Invalid arguments.");
     }
 }
