@@ -1,19 +1,17 @@
-pub mod config;
-pub mod note_entry;
+mod config;
+mod note_entry;
 mod prompt;
-pub mod providers;
+mod providers;
+
 use crate::config::Config;
+use crate::note_entry::NoteEntry;
 use crate::prompt::{clear, prompt, prompt_yesno};
 use crate::providers::file_system_provider::FileSystemNotesProvider;
 use crate::providers::provider::NotesProvider;
+
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use note_entry::NoteEntry;
-use std::env;
-use std::fs::OpenOptions;
-use std::io;
-use std::io::Stdout;
-use std::io::{stdin, stdout, Write};
+use std::io::{stdin, stdout, Result as IOResult, Stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::{thread, time};
@@ -22,7 +20,6 @@ use termion::input::TermRead;
 use termion::raw::IntoRawMode;
 use termion::raw::RawTerminal;
 use termion::{color, cursor};
-use toml::Table;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -71,7 +68,7 @@ fn display_file_list<W: Write>(
     stdout: &mut W,
     files: &[NoteEntry],
     selected_index: usize,
-) -> io::Result<()> {
+) -> IOResult<()> {
     // Clear terminal and prepare to list out files
     // This function just bubbles up IO errors to let the implementer handle whether to panic.
     writeln!(
@@ -130,7 +127,7 @@ fn show_notes<T: NotesProvider>(
     stdout: &mut RawTerminal<Stdout>,
     stdin: &std::io::Stdin,
     config: &Config,
-) -> io::Result<()> {
+) -> IOResult<()> {
     let mut note_list = notes_provider.get_notes();
     display_file_list(stdout, &note_list, state.selected_index())?;
 
@@ -242,7 +239,7 @@ fn show_notes<T: NotesProvider>(
                 }
             }
             Key::Char('\n') => {
-                let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                 launch_editor(&note_list[state.selected_index()].path, &editor)
             }
             _ => {}
@@ -270,13 +267,13 @@ fn main() {
     let config = match config_file.to_str() {
         Some(file) => {
             let config = match std::fs::read_to_string(file) {
-                Ok(file) => match file.parse::<Table>() {
+                Ok(file) => match file.parse::<toml::Table>() {
                     Ok(table) => table,
                     _ => {
                         panic!("Unable to parse config file. Make sure it is valid toml.");
                     }
                 },
-                _ => Table::new(),
+                _ => toml::Table::new(),
             };
 
             Config::new(config)
@@ -309,7 +306,7 @@ fn main() {
         let date_time: String = current_utc.format("%Y-%m-%d:%H-%M-%S").to_string();
         let quick_note = date_time + "\n" + &args.quick_note.join(" ") + "\n";
 
-        let mut file = OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
             .open(quick_notes_file_path)
