@@ -1,18 +1,21 @@
-mod config;
+pub mod config;
+pub mod note_entry;
 mod prompt;
+pub mod providers;
 use crate::config::Config;
 use crate::prompt::{clear, prompt, prompt_yesno};
+use crate::providers::file_system_provider::FileSystemNotesProvider;
+use crate::providers::provider::NotesProvider;
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use note_entry::NoteEntry;
 use std::env;
 use std::fs::OpenOptions;
-use std::fs::{self};
 use std::io;
 use std::io::Stdout;
 use std::io::{stdin, stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::SystemTime;
 use std::{thread, time};
 use termion::event::Key;
 use termion::input::TermRead;
@@ -39,64 +42,6 @@ struct Args {
 
 struct NavigationState {
     selected_index: usize,
-}
-
-struct NoteEntry {
-    path: String,
-    name: String,
-    modified: SystemTime,
-    is_default: bool,
-}
-
-impl NoteEntry {
-    fn new(path: String, name: String, modified: SystemTime, is_default: bool) -> Self {
-        NoteEntry {
-            path,
-            name,
-            modified,
-            is_default,
-        }
-    }
-}
-
-trait NotesProvider {
-    fn get_notes(&self) -> Vec<NoteEntry>;
-}
-
-struct FileSystemNotesProvider<'a> {
-    config: &'a Config,
-}
-
-impl<'a> FileSystemNotesProvider<'a> {
-    fn new(config: &'a Config) -> FileSystemNotesProvider {
-        FileSystemNotesProvider { config }
-    }
-}
-
-impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
-    fn get_notes(&self) -> Vec<NoteEntry> {
-        let files = fs::read_dir(self.config.get_notes_directory()).unwrap();
-        let mut file_entries: Vec<NoteEntry> = files
-            .map(|entry| {
-                let file = entry.unwrap();
-                let name = file.file_name().to_str().unwrap().to_owned();
-                let path = file.path().to_str().unwrap().to_owned();
-                let is_default = name == self.config.get_default_notes_file();
-                NoteEntry::new(
-                    path,
-                    name,
-                    file.metadata().unwrap().modified().unwrap(),
-                    is_default,
-                )
-            })
-            .collect();
-        file_entries.sort_by(|a, b| {
-            let a_ts = a.modified;
-            let b_ts = b.modified;
-            b_ts.cmp(&a_ts)
-        });
-        file_entries
-    }
 }
 
 impl NavigationState {
@@ -172,14 +117,14 @@ fn display_file_list<W: Write>(
     write!(stdout, "{hide}", hide = cursor::Hide).unwrap();
     write!(
         stdout,
-        "{goto}New file [n]; Delete file [D]; Quit [q]",
+        "{goto}New file [n]; Rename file [r]; Delete file [D]; Quit [q]",
         goto = cursor::Goto(1, h)
     )?;
     stdout.flush()?;
     Ok(())
 }
 
-fn show_file_navigation<T: NotesProvider>(
+fn show_notes<T: NotesProvider>(
     notes_provider: &T,
     state: &mut NavigationState,
     stdout: &mut RawTerminal<Stdout>,
@@ -206,77 +151,18 @@ fn show_file_navigation<T: NotesProvider>(
             Key::Char('q') => {
                 break;
             }
-            Key::Char('r') => {
-                let mut note_name = String::new();
-
-                loop {
-                    // Prompt in a loop, only exiting if we create a valid file.
-                    prompt(
-                        stdout,
-                        stdin,
-                        format!(
-                            "Enter a new name note file {}: ",
-                            note_list[state.selected_index()].name,
-                        ),
-                        &mut note_name,
-                    );
-
-                    // Check for empty entry.  Re-prompt if it is.
-                    if note_name.is_empty() {
-                        clear(stdout);
-                        write!(stdout, "File name empty. Try again, bro.")?;
-                        stdout.flush()?;
-                        thread::sleep(time::Duration::from_secs(1));
-                        continue;
-                    }
-
-                    let new_file_path = format!("{}{}", config.get_notes_directory(), note_name);
-                    let new_file_path = Path::new(&new_file_path);
-
-                    // Check for a valid extension and add one if there isn't one.
-                    let new_file_path = match new_file_path.extension() {
-                        // TODO maybe check from a list of valid extensions?
-                        Some(_) => new_file_path.to_path_buf(),
-                        None => {
-                            let path_with_ext = new_file_path.to_str().unwrap().to_owned()
-                                + config.get_default_file_extension();
-                            Path::new(&path_with_ext).to_path_buf()
-                        }
-                    };
-
-                    // Check to confirm the file doesn't already exist. Re-prompt
-                    // if it does.
-                    if new_file_path.exists() {
-                        clear(stdout);
-                        write!(
-                            stdout,
-                            "File {} already exists",
-                            new_file_path.to_str().expect("file path is present")
-                        )?;
-                        stdout.flush()?;
-                        thread::sleep(time::Duration::from_secs(1));
-                        continue;
-                    }
-
-                    // If we can't get a string and/or the file can't be created, time to
-                    // panic.
-                    new_file_path.to_str().expect("Invalid file path");
-                    let old_file_path = note_list[state.selected_index()].path.clone();
-                    fs::rename(old_file_path, new_file_path).unwrap();
-                    state.set_selected_index(0);
-                    break;
-                }
-            }
             Key::Char('D') => {
-                let file_to_del = &note_list[state.selected_index].path;
-
-                if !file_to_del.contains(config.get_default_notes_file()) {
+                let note_to_del = &note_list[state.selected_index];
+                if !note_to_del.path.contains(config.get_default_notes_file()) {
                     if prompt_yesno(
                         stdout,
                         stdin,
-                        format!("Are you sure you want to delete {}? [y/N] ", file_to_del),
+                        format!(
+                            "Are you sure you want to delete {}? [y/N] ",
+                            note_to_del.path
+                        ),
                     ) {
-                        fs::remove_file(file_to_del).expect("Could not delete file.");
+                        notes_provider.delete_note(note_to_del).unwrap();
                         if state.selected_index() > note_list.len() - 2 {
                             state.set_selected_index(state.selected_index.saturating_sub(1));
                         }
@@ -292,8 +178,42 @@ fn show_file_navigation<T: NotesProvider>(
                     thread::sleep(time::Duration::from_secs(1));
                 }
             }
+            Key::Char('r') => {
+                let mut note_name = String::new();
+                let selected_note = &note_list[state.selected_index()];
+
+                loop {
+                    // Prompt in a loop, only exiting if we create a valid file.
+                    prompt(
+                        stdout,
+                        stdin,
+                        format!("Enter a new name for '{}': ", selected_note.name,),
+                        &mut note_name,
+                    );
+
+                    match notes_provider.validate_note(&note_name) {
+                        Ok(new_note) => {
+                            // Validation was successful, rename the note.
+                            notes_provider
+                                .rename_note(&selected_note.path, &new_note.path)
+                                .unwrap();
+                            state.set_selected_index(0);
+                            break;
+                        }
+                        Err(error) => {
+                            // If it failed to validate for some reason, write out the error and
+                            // re-prompt.
+                            clear(stdout);
+                            write!(stdout, "{}", error)?;
+                            stdout.flush()?;
+                            thread::sleep(time::Duration::from_secs(1));
+                            continue;
+                        }
+                    }
+                }
+            }
             Key::Char('n') => {
-                let mut file_name = String::new();
+                let mut note_name = String::new();
 
                 loop {
                     // Prompt in a loop, only exiting if we create a valid file.
@@ -301,52 +221,24 @@ fn show_file_navigation<T: NotesProvider>(
                         stdout,
                         stdin,
                         String::from("Enter a name for your new note file: "),
-                        &mut file_name,
+                        &mut note_name,
                     );
 
-                    // Check for empty entry.  Re-prompt if it is.
-                    if file_name.is_empty() {
-                        clear(stdout);
-                        write!(stdout, "File name empty. Try again, bro.")?;
-                        stdout.flush()?;
-                        thread::sleep(time::Duration::from_secs(1));
-                        continue;
-                    }
-
-                    let new_file_path = format!("{}{}", config.get_notes_directory(), file_name);
-                    let new_file_path = Path::new(&new_file_path);
-
-                    // Check for a valid extension and add one if there isn't one.
-                    let new_file_path = match new_file_path.extension() {
-                        // TODO maybe check from a list of valid extensions?
-                        Some(_) => new_file_path.to_path_buf(),
-                        None => {
-                            let path_with_ext = new_file_path.to_str().unwrap().to_owned()
-                                + config.get_default_file_extension();
-                            Path::new(&path_with_ext).to_path_buf()
+                    match notes_provider.validate_note(&note_name) {
+                        Ok(new_note) => {
+                            notes_provider.create_note(new_note).unwrap();
+                            state.set_selected_index(0);
+                            break;
                         }
-                    };
-
-                    // Check to confirm the file doesn't already exist. Re-prompt
-                    // if it does.
-                    if new_file_path.exists() {
-                        clear(stdout);
-                        write!(
-                            stdout,
-                            "File {} already exists",
-                            new_file_path.to_str().expect("file path is present")
-                        )?;
-                        stdout.flush()?;
-                        thread::sleep(time::Duration::from_secs(1));
-                        continue;
+                        Err(error) => {
+                            // Check for empty entry.  Re-prompt if it is.
+                            clear(stdout);
+                            write!(stdout, "{}", error)?;
+                            stdout.flush()?;
+                            thread::sleep(time::Duration::from_secs(1));
+                            continue;
+                        }
                     }
-
-                    // If we can't get a string and/or the file can't be created, time to
-                    // panic.
-                    new_file_path.to_str().expect("Invalid file path");
-                    fs::File::create(new_file_path).expect("Could not create file. Exiting.");
-                    state.set_selected_index(0);
-                    break;
                 }
             }
             Key::Char('\n') => {
@@ -439,7 +331,7 @@ fn main() {
         // Main application loop
         // Show file navigation screen
         let notes_provider = FileSystemNotesProvider::new(&config);
-        match show_file_navigation(&notes_provider, &mut state, &mut stdout, &stdin, &config) {
+        match show_notes(&notes_provider, &mut state, &mut stdout, &stdin, &config) {
             Ok(_) => {
                 // If we didn't fail to run, just continue implicitly.
                 clear(&mut stdout);
