@@ -14,6 +14,7 @@ use clap::Parser;
 use std::io::{stdin, stdout, Result as IOResult, Stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::SystemTime;
 use std::{thread, time};
 use termion::event::Key;
 use termion::input::TermRead;
@@ -150,13 +151,18 @@ fn show_notes<T: NotesProvider>(
             }
             Key::Char('D') => {
                 let note_to_del = &note_list[state.selected_index];
-                if !note_to_del.path.contains(config.get_default_notes_file()) {
+                if !note_to_del
+                    .path
+                    .to_str()
+                    .unwrap()
+                    .contains(config.get_default_notes_file())
+                {
                     if prompt_yesno(
                         stdout,
                         stdin,
                         format!(
                             "Are you sure you want to delete {}? [y/N] ",
-                            note_to_del.path
+                            note_to_del.path.to_str().unwrap()
                         ),
                     ) {
                         notes_provider.delete_note(note_to_del).unwrap();
@@ -176,32 +182,63 @@ fn show_notes<T: NotesProvider>(
                 }
             }
             Key::Char('r') => {
-                let mut note_name = String::new();
                 let selected_note = &note_list[state.selected_index()];
 
                 loop {
+                    let mut note_name = String::new();
+
                     // Prompt in a loop, only exiting if we create a valid file.
                     prompt(
                         stdout,
                         stdin,
-                        format!("Enter a new name for '{}': ", selected_note.name,),
+                        format!("Enter a new name for '{}': ", selected_note.name),
                         &mut note_name,
                     );
 
-                    match notes_provider.validate_note(&note_name) {
-                        Ok(new_note) => {
+                    // Check for empty entry.  Re-prompt if it is.
+                    if note_name.is_empty() {
+                        write!(
+                            stdout,
+                            "{}",
+                            String::from("Note name empty. Please enter a valid name.")
+                        )?;
+                        thread::sleep(time::Duration::from_secs(1));
+                        continue;
+                    }
+
+                    let new_note_path = format!("{}{}", config.get_notes_directory(), note_name);
+                    let new_note_path = Path::new(&new_note_path);
+                    let new_note_path = match new_note_path.extension() {
+                        Some(_) => new_note_path.to_path_buf(),
+                        None => {
+                            // Add an extension if there isn't one.
+                            let path_with_ext = new_note_path.to_str().unwrap().to_owned()
+                                + config.get_default_file_extension();
+                            Path::new(&path_with_ext).to_path_buf()
+                        }
+                    };
+
+                    let mut new_note = selected_note.clone();
+                    new_note.path = new_note_path;
+
+                    match notes_provider.note_exists(&new_note.path) {
+                        false => {
                             // Validation was successful, rename the note.
                             notes_provider
-                                .rename_note(&selected_note.path, &new_note.path)
+                                .rename_note(selected_note, &new_note.path)
                                 .unwrap();
                             state.set_selected_index(0);
                             break;
                         }
-                        Err(error) => {
+                        _ => {
                             // If it failed to validate for some reason, write out the error and
                             // re-prompt.
                             clear(stdout);
-                            write!(stdout, "{}", error)?;
+                            write!(
+                                stdout,
+                                "note {} already exists",
+                                new_note.path.to_str().unwrap()
+                            )?;
                             stdout.flush()?;
                             thread::sleep(time::Duration::from_secs(1));
                             continue;
@@ -210,9 +247,9 @@ fn show_notes<T: NotesProvider>(
                 }
             }
             Key::Char('n') => {
-                let mut note_name = String::new();
-
                 loop {
+                    let mut note_name = String::new();
+
                     // Prompt in a loop, only exiting if we create a valid file.
                     prompt(
                         stdout,
@@ -221,16 +258,34 @@ fn show_notes<T: NotesProvider>(
                         &mut note_name,
                     );
 
-                    match notes_provider.validate_note(&note_name) {
-                        Ok(new_note) => {
-                            notes_provider.create_note(new_note).unwrap();
+                    let new_note_path = format!("{}{}", config.get_notes_directory(), note_name);
+                    let new_note_path = Path::new(&new_note_path);
+                    let new_note_path = match new_note_path.extension() {
+                        Some(_) => new_note_path.to_path_buf(),
+                        None => {
+                            // Add an extension if there isn't one.
+                            let path_with_ext = new_note_path.to_str().unwrap().to_owned()
+                                + config.get_default_file_extension();
+                            Path::new(&path_with_ext).to_path_buf()
+                        }
+                    };
+
+                    let note = NoteEntry::new(new_note_path, note_name, SystemTime::now(), false);
+
+                    match notes_provider.note_exists(&note.path) {
+                        false => {
+                            notes_provider.create_note(note).unwrap();
                             state.set_selected_index(0);
                             break;
                         }
-                        Err(error) => {
+                        true => {
                             // Check for empty entry.  Re-prompt if it is.
                             clear(stdout);
-                            write!(stdout, "{}", error)?;
+                            write!(
+                                stdout,
+                                "note {} already exists",
+                                note.path.to_str().unwrap()
+                            )?;
                             stdout.flush()?;
                             thread::sleep(time::Duration::from_secs(1));
                             continue;
@@ -240,7 +295,10 @@ fn show_notes<T: NotesProvider>(
             }
             Key::Char('\n') => {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                launch_editor(&note_list[state.selected_index()].path, &editor)
+                launch_editor(
+                    note_list[state.selected_index()].path.to_str().unwrap(),
+                    &editor,
+                )
             }
             _ => {}
         }
