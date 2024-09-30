@@ -3,6 +3,7 @@ use crate::note_entry::NoteEntry;
 use crate::NotesProvider;
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub struct FileSystemNotesProvider<'a> {
@@ -61,6 +62,7 @@ impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
                     name,
                     file.metadata().unwrap().modified().unwrap(),
                     is_default,
+                    file.metadata().unwrap().size(),
                 )
             })
             .collect();

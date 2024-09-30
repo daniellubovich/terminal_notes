@@ -107,11 +107,12 @@ fn display_file_list<W: Write>(
         if i == selected_index {
             writeln!(
                 stdout,
-                "{goto}{highlight}{fontcolor}{formatted_filename:<width$}\t{modified}{reset_highlight}{reset_fontcolor}",
+                "{goto}{highlight}{fontcolor}{formatted_filename:<width$}\t{modified}\t{size}{reset_highlight}{reset_fontcolor}",
                 goto = cursor::Goto(1, (i + 2) as u16),
                 highlight = color::Bg(color::White),
                 fontcolor = color::Fg(color::Black),
                 width = width,
+                size = entry.size,
                 modified = date.format(DATE_FORMAT),
                 reset_highlight = color::Bg(color::Reset),
                 reset_fontcolor = color::Fg(color::Reset)
@@ -119,9 +120,10 @@ fn display_file_list<W: Write>(
         } else {
             writeln!(
                 stdout,
-                "{goto}{formatted_filename:<width$}\t{modified}",
+                "{goto}{formatted_filename:<width$}\t{modified}\t{size}",
                 goto = cursor::Goto(1, (i + 2) as u16),
                 width = width,
+                size = entry.size,
                 modified = date.format(DATE_FORMAT),
             )?
         }
@@ -331,7 +333,8 @@ fn show_notes<T: NotesProvider>(
                         }
                     };
 
-                    let note = NoteEntry::new(new_note_path, note_name, SystemTime::now(), false);
+                    let note =
+                        NoteEntry::new(new_note_path, note_name, SystemTime::now(), false, 0);
 
                     match notes_provider.note_exists(&note.path) {
                         false => {
