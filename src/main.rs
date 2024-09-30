@@ -22,6 +22,8 @@ use termion::raw::IntoRawMode;
 use termion::raw::RawTerminal;
 use termion::{color, cursor};
 
+const DATE_FORMAT: &str = "%b %m %I:%M";
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -81,31 +83,46 @@ fn display_file_list<W: Write>(
         reset = color::Fg(color::Reset)
     )?;
 
+    let default_indicator = "  [Default]".to_owned();
+    let mut width = 0;
+    for f in files.iter() {
+        if f.name.len() + default_indicator.len() > width {
+            width = f.name.len() + default_indicator.len();
+        }
+    }
+
     for (i, f) in files.iter().enumerate() {
         let entry = f;
+        let date: chrono::DateTime<chrono::Local> = entry.modified.into();
+        let formatted_filename = format!(
+            "{file}{default_indicator}",
+            file = entry.name,
+            default_indicator = if entry.is_default {
+                default_indicator.clone()
+            } else {
+                String::new()
+            },
+        );
+
         if i == selected_index {
             writeln!(
                 stdout,
-                "{goto}{highlight}{fontcolor}{file}{default_indicator}{reset_highlight}{reset_fontcolor}",
+                "{goto}{highlight}{fontcolor}{formatted_filename:<width$}\t{modified}{reset_highlight}{reset_fontcolor}",
                 goto = cursor::Goto(1, (i + 2) as u16),
                 highlight = color::Bg(color::White),
                 fontcolor = color::Fg(color::Black),
-                file = entry.name,
-                default_indicator = if entry.is_default { "  [Default]".to_owned() } else { String::new() },
+                width = width,
+                modified = date.format(DATE_FORMAT),
                 reset_highlight = color::Bg(color::Reset),
                 reset_fontcolor = color::Fg(color::Reset)
             )?
         } else {
             writeln!(
                 stdout,
-                "{goto}{file}{default_indicator}",
+                "{goto}{formatted_filename:<width$}\t{modified}",
                 goto = cursor::Goto(1, (i + 2) as u16),
-                default_indicator = if entry.is_default {
-                    "  [Default]".to_owned()
-                } else {
-                    String::new()
-                },
-                file = entry.name
+                width = width,
+                modified = date.format(DATE_FORMAT),
             )?
         }
     }

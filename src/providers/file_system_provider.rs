@@ -46,6 +46,11 @@ impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
     fn get_notes(&self) -> Vec<NoteEntry> {
         let files = fs::read_dir(self.config.get_notes_directory()).unwrap();
         let mut file_entries: Vec<NoteEntry> = files
+            .filter(|entry| {
+                // Filter out directories
+                let file = entry.as_ref().unwrap();
+                !file.metadata().unwrap().is_dir()
+            })
             .map(|entry| {
                 let file = entry.unwrap();
                 let name = file.file_name().to_str().unwrap().to_owned();
