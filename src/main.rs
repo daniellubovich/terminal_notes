@@ -14,7 +14,7 @@ use clap::Parser;
 use std::io::{stdin, stdout, Result as IOResult, Stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use std::{thread, time};
 use termion::event::Key;
 use termion::input::TermRead;
@@ -149,8 +149,58 @@ fn show_notes<T: NotesProvider>(
     let mut note_list = notes_provider.get_notes();
     display_file_list(stdout, &note_list, state.selected_index())?;
 
+    let mut key_buffer: Vec<Key> = vec![];
+    let mut last_keypress_time = Instant::now();
+
     for c in stdin.keys() {
-        match c.unwrap() {
+        let event = c.unwrap();
+
+        key_buffer.push(event);
+
+        if key_buffer == [Key::Char('g'), Key::Char('g')] {
+            state.set_selected_index(0);
+            key_buffer.clear();
+        } else if key_buffer == [Key::Char('d'), Key::Char('d')] {
+            let note_to_del = &note_list[state.selected_index];
+            if !note_to_del
+                .path
+                .to_str()
+                .unwrap()
+                .contains(config.get_default_notes_file())
+            {
+                if prompt_yesno(
+                    stdout,
+                    stdin,
+                    format!(
+                        "Are you sure you want to delete {}? [y/N] ",
+                        note_to_del.path.to_str().unwrap()
+                    ),
+                ) {
+                    notes_provider.delete_note(note_to_del).unwrap();
+                    if state.selected_index() > note_list.len() - 2 {
+                        state.set_selected_index(state.selected_index.saturating_sub(1));
+                    }
+                }
+            } else {
+                write!(
+                    stdout,
+                    "{}{}Cannot delete your default notes file.",
+                    termion::clear::All,
+                    cursor::Goto(1, 1),
+                )?;
+                stdout.flush()?;
+                thread::sleep(time::Duration::from_secs(1));
+            }
+        } else if key_buffer.len() == 2
+            || Instant::now().duration_since(last_keypress_time) > Duration::from_millis(500)
+        {
+            key_buffer.clear();
+            key_buffer.push(event);
+        }
+
+        last_keypress_time = Instant::now();
+
+        match event {
             Key::Char('j') => {
                 if state.selected_index < note_list.len() - 1 {
                     let new_index = state.selected_index.saturating_add(1);
@@ -163,6 +213,9 @@ fn show_notes<T: NotesProvider>(
                     state.set_selected_index(new_index);
                 }
             }
+            Key::Char('G') => {
+                state.set_selected_index(note_list.len() - 1);
+            }
             Key::Char('q') => {
                 break;
             }
@@ -174,18 +227,9 @@ fn show_notes<T: NotesProvider>(
                     .unwrap()
                     .contains(config.get_default_notes_file())
                 {
-                    if prompt_yesno(
-                        stdout,
-                        stdin,
-                        format!(
-                            "Are you sure you want to delete {}? [y/N] ",
-                            note_to_del.path.to_str().unwrap()
-                        ),
-                    ) {
-                        notes_provider.delete_note(note_to_del).unwrap();
-                        if state.selected_index() > note_list.len() - 2 {
-                            state.set_selected_index(state.selected_index.saturating_sub(1));
-                        }
+                    notes_provider.delete_note(note_to_del).unwrap();
+                    if state.selected_index() > note_list.len() - 2 {
+                        state.set_selected_index(state.selected_index.saturating_sub(1));
                     }
                 } else {
                     write!(
