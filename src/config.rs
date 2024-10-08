@@ -33,7 +33,7 @@ impl Config {
             .unwrap_or(&default_notes_file)
             .as_str();
 
-        let default_file_extension = Value::String(".txt".to_string());
+        let default_file_extension = Value::String("txt".to_string());
         let default_file_extension = config
             .get("default_file_extension")
             .unwrap_or(&default_file_extension)

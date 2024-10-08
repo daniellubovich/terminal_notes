@@ -1,5 +1,8 @@
-# High
+# Done
+- dd to delete, D to force delete w/out prompt
 - Create generic provider interface for note management
+
+# High
 - Create Sqlite provider
 - Syncing
     - Somehow sync notes
@@ -9,6 +12,5 @@
     - Sort change when [s] key is pressed
 - File deletion
     - Soft deletes? Maybe this is a provider thing
-    - dd to delete, D to force delete w/out prompt
 - File locking
     - lock files so that they can't be deleted

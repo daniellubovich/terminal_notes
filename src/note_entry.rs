@@ -25,4 +25,8 @@ impl NoteEntry {
             size,
         }
     }
+
+    pub fn get_size(&self) -> &u64 {
+        &self.size
+    }
 }

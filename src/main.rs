@@ -5,13 +5,14 @@ mod providers;
 
 use crate::config::Config;
 use crate::note_entry::NoteEntry;
-use crate::prompt::{clear, prompt, prompt_yesno};
+use crate::prompt::{clear, flash_warning, prompt, prompt_yesno};
 use crate::providers::file_system_provider::FileSystemNotesProvider;
 use crate::providers::provider::NotesProvider;
 
-use chrono::{DateTime, Utc};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use std::io::{stdin, stdout, Result as IOResult, Stdout, Write};
+use log::{debug, error, warn, LevelFilter};
+use std::io::{stdin, stdout, Stdout, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
@@ -28,25 +29,41 @@ const DATE_FORMAT: &str = "%b %m %I:%M";
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(
-        short = 'g',
+        short = 'e',
         long,
         default_value_t = false,
         exclusive = true,
         help = "Generate a default configuration toml to be used in ~/.noteconfig"
     )]
-    generate_config: bool,
+    example_config: bool,
+}
 
-    #[arg(last = true)]
-    quick_note: Vec<String>,
+#[derive(Eq, PartialEq)]
+enum SortField {
+    Modified,
+    Size,
+    Name,
+}
+
+#[derive(Eq, PartialEq)]
+enum SortDir {
+    Asc = 1,
+    Desc = -1,
 }
 
 struct NavigationState {
     selected_index: usize,
+    sort_dir: SortDir,
+    sort_field: SortField,
 }
 
 impl NavigationState {
     fn new(selected_index: usize) -> Self {
-        NavigationState { selected_index }
+        NavigationState {
+            selected_index,
+            sort_field: SortField::Modified,
+            sort_dir: SortDir::Asc,
+        }
     }
 
     fn selected_index(&self) -> usize {
@@ -55,6 +72,20 @@ impl NavigationState {
 
     fn set_selected_index(&mut self, new_index: usize) {
         self.selected_index = new_index;
+    }
+
+    fn sort(&mut self, sort_field: SortField) {
+        let mut sort_dir = SortDir::Desc;
+        if self.sort_field == sort_field {
+            if self.sort_dir == SortDir::Desc {
+                sort_dir = SortDir::Asc;
+            } else {
+                sort_dir = SortDir::Desc;
+            }
+        }
+
+        self.sort_dir = sort_dir;
+        self.sort_field = sort_field;
     }
 }
 
@@ -67,22 +98,7 @@ fn launch_editor(filename: &str, editor: &str) {
         .expect("Failed to launch editor.");
 }
 
-fn display_file_list<W: Write>(
-    stdout: &mut W,
-    files: &[NoteEntry],
-    selected_index: usize,
-) -> IOResult<()> {
-    // Clear terminal and prepare to list out files
-    // This function just bubbles up IO errors to let the implementer handle whether to panic.
-    writeln!(
-        stdout,
-        "{clear}{goto}{color}Notes Files:{reset}",
-        clear = termion::clear::All,
-        goto = cursor::Goto(1, 1),
-        color = color::Fg(color::Yellow),
-        reset = color::Fg(color::Reset)
-    )?;
-
+fn get_filename_column_width(files: &[NoteEntry]) -> usize {
     let default_indicator = "  [Default]".to_owned();
     let mut width = 0;
     for f in files.iter() {
@@ -90,111 +106,175 @@ fn display_file_list<W: Write>(
             width = f.name.len() + default_indicator.len();
         }
     }
+    width
+}
 
+fn draw_header(files: &[NoteEntry], state: &NavigationState) -> String {
+    let filename_col_width = get_filename_column_width(files);
+
+    let mut col1 = String::from("Notes Files:");
+    let mut col2 = String::from("Modified");
+    let mut col3 = String::from("Size(b)");
+
+    let sort_indicator = match state.sort_dir {
+        SortDir::Desc => "↓",
+        SortDir::Asc => "↑",
+    };
+    match state.sort_field {
+        SortField::Name => col1 = format!("{} {}", col1, sort_indicator),
+        SortField::Modified => col2 = format!("{} {}", col2, sort_indicator),
+        SortField::Size => col3 = format!("{} {}", col3, sort_indicator),
+    };
+
+    format!(
+        "{clear}{goto}{color}{col1:<filename_col_width$}\t{col2}\t{col3}{reset}",
+        filename_col_width = filename_col_width,
+        col1 = col1,
+        col2 = col2,
+        col3 = col3,
+        goto = cursor::Goto(1, 1),
+        clear = termion::clear::All,
+        color = color::Fg(color::Yellow),
+        reset = color::Fg(color::Reset)
+    )
+}
+
+fn display_file_list<W: Write>(
+    stdout: &mut W,
+    files: &[NoteEntry],
+    state: &mut NavigationState,
+) -> Result<()> {
+    let selected_index = state.selected_index();
+
+    // Draw the header.
+    writeln!(stdout, "{}", draw_header(files, state))?;
+
+    let filename_col_width = get_filename_column_width(files);
+    let default_indicator = "  [Default]";
+
+    // Iterate over each file and draw it
     for (i, f) in files.iter().enumerate() {
         let entry = f;
         let date: chrono::DateTime<chrono::Local> = entry.modified.into();
-        let formatted_filename = format!(
+        let filename = format!(
             "{file}{default_indicator}",
             file = entry.name,
             default_indicator = if entry.is_default {
-                default_indicator.clone()
+                default_indicator
             } else {
-                String::new()
+                ""
             },
         );
 
         if i == selected_index {
             writeln!(
                 stdout,
-                "{goto}{highlight}{fontcolor}{formatted_filename:<width$}\t{modified}\t{size}{reset_highlight}{reset_fontcolor}",
+                "{goto}{highlight}{fontcolor}{filename:<filename_col_width$}\t{modified}\t{size}{reset_highlight}{reset_fontcolor}",
                 goto = cursor::Goto(1, (i + 2) as u16),
                 highlight = color::Bg(color::White),
-                fontcolor = color::Fg(color::Black),
-                width = width,
-                size = entry.size,
-                modified = date.format(DATE_FORMAT),
                 reset_highlight = color::Bg(color::Reset),
-                reset_fontcolor = color::Fg(color::Reset)
+                reset_fontcolor = color::Fg(color::Reset),
+                fontcolor = color::Fg(color::Black),
+                filename = filename,
+                filename_col_width = filename_col_width,
+                size = entry.get_size(),
+                modified = date.format(DATE_FORMAT),
             )?
         } else {
             writeln!(
                 stdout,
-                "{goto}{formatted_filename:<width$}\t{modified}\t{size}",
+                "{goto}{filename:<filename_col_width$}\t{modified}\t{size}",
                 goto = cursor::Goto(1, (i + 2) as u16),
-                width = width,
-                size = entry.size,
+                filename = filename,
+                filename_col_width = filename_col_width,
                 modified = date.format(DATE_FORMAT),
+                size = entry.get_size(),
             )?
         }
     }
 
     // Print the command prompt at the bottom of the terminal.
     let (_, h) = termion::terminal_size()?;
-    write!(stdout, "{hide}", hide = cursor::Hide).unwrap();
     write!(
         stdout,
-        "{goto}New file [n]; Rename file [r]; Delete file [D]; Quit [q]",
+        "{hide}{goto}New file [n]; Rename file [r]; Delete file [dd]; Sort[s]; Quit [q]",
+        hide = cursor::Hide,
         goto = cursor::Goto(1, h)
     )?;
     stdout.flush()?;
     Ok(())
 }
 
-fn show_notes<T: NotesProvider>(
+fn run<T: NotesProvider>(
     notes_provider: &T,
     state: &mut NavigationState,
     stdout: &mut RawTerminal<Stdout>,
     stdin: &std::io::Stdin,
     config: &Config,
-) -> IOResult<()> {
-    let mut note_list = notes_provider.get_notes();
-    display_file_list(stdout, &note_list, state.selected_index())?;
+) -> Result<()> {
+    let mut note_list = notes_provider.get_notes(&state.sort_field, &state.sort_dir);
+    display_file_list(stdout, &note_list, state)?;
 
     let mut key_buffer: Vec<Key> = vec![];
     let mut last_keypress_time = Instant::now();
 
-    for c in stdin.keys() {
-        let event = c.unwrap();
+    for event_opt in stdin.keys() {
+        let event = match event_opt {
+            Ok(event) => event,
+            Err(error) => {
+                warn!(
+                    "error occured when processing keystroke. Retrying. {}",
+                    error
+                );
+                continue;
+            }
+        };
 
         key_buffer.push(event);
 
         if key_buffer == [Key::Char('g'), Key::Char('g')] {
-            state.set_selected_index(0);
             key_buffer.clear();
+            state.set_selected_index(0);
         } else if key_buffer == [Key::Char('d'), Key::Char('d')] {
+            key_buffer.clear();
             let note_to_del = &note_list[state.selected_index];
-            if !note_to_del
+
+            let path_str = note_to_del
                 .path
                 .to_str()
-                .unwrap()
-                .contains(config.get_default_notes_file())
-            {
-                if prompt_yesno(
+                .context("could not convert file path to string")?;
+            if path_str.is_empty() {
+                flash_warning(
+                    stdout,
+                    format!("empty path found for note {}", note_to_del.name),
+                )?;
+            } else if path_str.contains(config.get_default_notes_file()) {
+                flash_warning(
+                    stdout,
+                    format!(
+                        "{}{}Cannot delete your default notes file.",
+                        termion::clear::All,
+                        cursor::Goto(1, 1),
+                    ),
+                )?;
+            } else {
+                let affirmative = prompt_yesno(
                     stdout,
                     stdin,
-                    format!(
-                        "Are you sure you want to delete {}? [y/N] ",
-                        note_to_del.path.to_str().unwrap()
-                    ),
-                ) {
-                    notes_provider.delete_note(note_to_del).unwrap();
+                    format!("Are you sure you want to delete {}? [y/N] ", path_str),
+                )?;
+
+                if affirmative {
+                    notes_provider
+                        .delete_note(note_to_del)
+                        .context("could not delete note")?;
                     if state.selected_index() > note_list.len() - 2 {
                         state.set_selected_index(state.selected_index.saturating_sub(1));
                     }
                 }
-            } else {
-                write!(
-                    stdout,
-                    "{}{}Cannot delete your default notes file.",
-                    termion::clear::All,
-                    cursor::Goto(1, 1),
-                )?;
-                stdout.flush()?;
-                thread::sleep(time::Duration::from_secs(1));
             }
         } else if key_buffer.len() == 2
-            || Instant::now().duration_since(last_keypress_time) > Duration::from_millis(500)
+            || Instant::now().duration_since(last_keypress_time) > Duration::from_millis(300)
         {
             key_buffer.clear();
             key_buffer.push(event);
@@ -221,42 +301,63 @@ fn show_notes<T: NotesProvider>(
             Key::Char('q') => {
                 break;
             }
-            Key::Char('D') => {
-                let note_to_del = &note_list[state.selected_index];
-                if !note_to_del
-                    .path
-                    .to_str()
-                    .unwrap()
-                    .contains(config.get_default_notes_file())
-                {
-                    notes_provider.delete_note(note_to_del).unwrap();
-                    if state.selected_index() > note_list.len() - 2 {
-                        state.set_selected_index(state.selected_index.saturating_sub(1));
+            Key::Char('s') => {
+                // Toggle between sort modes
+                let default_indicator = "  [Default]".to_owned();
+                let mut width = 0;
+                for f in note_list.iter() {
+                    if f.name.len() + default_indicator.len() > width {
+                        width = f.name.len() + default_indicator.len();
                     }
-                } else {
-                    write!(
-                        stdout,
-                        "{}{}Cannot delete your default notes file.",
-                        termion::clear::All,
-                        cursor::Goto(1, 1),
-                    )?;
-                    stdout.flush()?;
-                    thread::sleep(time::Duration::from_secs(1));
+                }
+
+                let col1 = String::from("[n] Notes Files:");
+                let col2 = String::from("[m] Modified");
+                let col3 = String::from("[s] Size(b)");
+
+                writeln!(
+                    stdout,
+                    "{goto}{color}{col1:<width$}\t{col2}\t{col3}{reset}",
+                    col1 = col1,
+                    col2 = col2,
+                    col3 = col3,
+                    width = width,
+                    goto = cursor::Goto(1, 1),
+                    color = color::Fg(color::Yellow),
+                    reset = color::Fg(color::Reset)
+                )?;
+
+                stdout.flush()?;
+
+                for k_event in stdin.keys() {
+                    let key = k_event.context("could not read input")?;
+                    match key {
+                        Key::Char('s') => {
+                            state.sort(SortField::Size);
+                            break;
+                        }
+                        Key::Char('n') => {
+                            state.sort(SortField::Name);
+                            break;
+                        }
+                        Key::Char('m') => {
+                            state.sort(SortField::Modified);
+                            break;
+                        }
+                        _ => continue,
+                    };
                 }
             }
             Key::Char('r') => {
                 let selected_note = &note_list[state.selected_index()];
 
                 loop {
-                    let mut note_name = String::new();
-
                     // Prompt in a loop, only exiting if we create a valid file.
-                    prompt(
+                    let note_name = prompt(
                         stdout,
                         stdin,
                         format!("Enter a new name for '{}': ", selected_note.name),
-                        &mut note_name,
-                    );
+                    )?;
 
                     // Check for empty entry.  Re-prompt if it is.
                     if note_name.is_empty() {
@@ -275,9 +376,9 @@ fn show_notes<T: NotesProvider>(
                         Some(_) => new_note_path.to_path_buf(),
                         None => {
                             // Add an extension if there isn't one.
-                            let path_with_ext = new_note_path.to_str().unwrap().to_owned()
-                                + config.get_default_file_extension();
-                            Path::new(&path_with_ext).to_path_buf()
+                            let mut new_note_path = new_note_path.to_path_buf();
+                            new_note_path.set_extension(config.get_default_file_extension());
+                            new_note_path
                         }
                     };
 
@@ -286,24 +387,26 @@ fn show_notes<T: NotesProvider>(
 
                     match notes_provider.note_exists(&new_note.path) {
                         false => {
-                            // Validation was successful, rename the note.
-                            notes_provider
-                                .rename_note(selected_note, &new_note.path)
-                                .unwrap();
+                            // Note with new path doesn't already exist, so we're good to
+                            // try to rename it.
+                            notes_provider.rename_note(selected_note, &new_note.path)?;
                             state.set_selected_index(0);
                             break;
                         }
                         _ => {
                             // If it failed to validate for some reason, write out the error and
                             // re-prompt.
-                            clear(stdout);
-                            write!(
+                            let new_note_path_str = new_note
+                                .path
+                                .to_str()
+                                .context("could not convert file path to string")?;
+                            flash_warning(
                                 stdout,
-                                "note {} already exists",
-                                new_note.path.to_str().unwrap()
+                                format!(
+                                    "Note {} already exists. Please enter a unique file name.",
+                                    new_note_path_str
+                                ),
                             )?;
-                            stdout.flush()?;
-                            thread::sleep(time::Duration::from_secs(1));
                             continue;
                         }
                     }
@@ -311,15 +414,12 @@ fn show_notes<T: NotesProvider>(
             }
             Key::Char('n') => {
                 loop {
-                    let mut note_name = String::new();
-
                     // Prompt in a loop, only exiting if we create a valid file.
-                    prompt(
+                    let note_name = prompt(
                         stdout,
                         stdin,
                         String::from("Enter a name for your new note file: "),
-                        &mut note_name,
-                    );
+                    )?;
 
                     let new_note_path = format!("{}{}", config.get_notes_directory(), note_name);
                     let new_note_path = Path::new(&new_note_path);
@@ -327,137 +427,115 @@ fn show_notes<T: NotesProvider>(
                         Some(_) => new_note_path.to_path_buf(),
                         None => {
                             // Add an extension if there isn't one.
-                            let path_with_ext = new_note_path.to_str().unwrap().to_owned()
-                                + config.get_default_file_extension();
-                            Path::new(&path_with_ext).to_path_buf()
+                            let mut new_note_path = new_note_path.to_path_buf();
+                            new_note_path.set_extension(config.get_default_file_extension());
+                            new_note_path
                         }
                     };
 
                     let note =
                         NoteEntry::new(new_note_path, note_name, SystemTime::now(), false, 0);
 
+                    if note.name.is_empty() {
+                        debug!("note name is empty. exiting prompt.");
+                        break;
+                    }
+
                     match notes_provider.note_exists(&note.path) {
                         false => {
-                            notes_provider.create_note(note).unwrap();
+                            notes_provider.create_note(note)?;
                             state.set_selected_index(0);
                             break;
                         }
                         true => {
                             // Check for empty entry.  Re-prompt if it is.
-                            clear(stdout);
-                            write!(
+                            let new_note_path = note
+                                .path
+                                .to_str()
+                                .context("could not convert file path to string")?;
+                            flash_warning(
                                 stdout,
-                                "note {} already exists",
-                                note.path.to_str().unwrap()
+                                format!("note {} already exists", new_note_path),
                             )?;
-                            stdout.flush()?;
-                            thread::sleep(time::Duration::from_secs(1));
                             continue;
                         }
                     }
                 }
             }
             Key::Char('\n') => {
+                let file_path = note_list[state.selected_index()]
+                    .path
+                    .to_str()
+                    .context("could not convert file path to string")?;
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                launch_editor(
-                    note_list[state.selected_index()].path.to_str().unwrap(),
-                    &editor,
-                )
+                launch_editor(file_path, &editor)
             }
             _ => {}
         }
 
-        note_list = notes_provider.get_notes();
-        display_file_list(stdout, &note_list, state.selected_index())?;
+        note_list = notes_provider.get_notes(&state.sort_field, &state.sort_dir);
+        display_file_list(stdout, &note_list, state)?;
     }
 
     Ok(())
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::parse();
 
-    if args.generate_config {
+    simple_logging::log_to_file("output.log", LevelFilter::Info)
+        .context("opening logfile output.log")?;
+
+    if args.example_config {
         println!("{}", &Config::generate());
-        return;
+        return Ok(());
     }
 
-    // Get the config file
-    let mut config_file = home::home_dir().unwrap_or_default();
-    config_file.push(".noteconfig");
+    // Load the config file
+    let mut config_file_path =
+        home::home_dir().context("could not find home directory for some reason")?;
+    config_file_path.push(".noteconfig");
+    let config_file = std::fs::read_to_string(config_file_path).context("reading config file")?;
+    let config_toml = config_file
+        .parse::<toml::Table>()
+        .context("parsing config file into toml")?;
+    let config = Config::new(config_toml);
 
-    let config = match config_file.to_str() {
-        Some(file) => {
-            let config = match std::fs::read_to_string(file) {
-                Ok(file) => match file.parse::<toml::Table>() {
-                    Ok(table) => table,
-                    _ => {
-                        panic!("Unable to parse config file. Make sure it is valid toml.");
-                    }
-                },
-                _ => toml::Table::new(),
-            };
-
-            Config::new(config)
-        }
-        None => {
-            panic!("Unable to find home directory. Something is very wrong :(")
-        }
-    };
+    // Eventually, we'll add other providers. SQLite hopefully.
+    let notes_provider = FileSystemNotesProvider::new(&config);
 
     // Check the notes dir and default file exist
+    // TODO move this logic into the provider. Need a validate_config func or something.
     let notes_directory = config.get_notes_directory();
-    let quick_notes_file_path = config.get_default_notes_path();
+    let default_notes_file_path = config.get_default_notes_path();
     if !Path::new(&notes_directory).exists() {
-        println!(
+        bail!(format!(
             "No {} folder exists. Please create it first.",
             notes_directory
-        );
-        return;
+        ))
     }
-    if !Path::new(&quick_notes_file_path).exists() {
-        println!(
+    if !Path::new(&default_notes_file_path).exists() {
+        bail!(format!(
             "No {} file exists. Please create it first.",
-            quick_notes_file_path
-        );
-        return;
+            default_notes_file_path
+        ))
     }
 
-    if !args.quick_note.is_empty() {
-        let current_utc: DateTime<Utc> = Utc::now();
-        let date_time: String = current_utc.format("%Y-%m-%d:%H-%M-%S").to_string();
-        let quick_note = date_time + "\n" + &args.quick_note.join(" ") + "\n";
+    // Create stdout and stdin for the main application loop
+    let mut stdout = stdout()
+        .into_raw_mode()
+        .with_context(|| "Could not open stdout. Something went very wrong")?;
+    let stdin = stdin();
 
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(quick_notes_file_path)
-            .expect("it opens quick notes file");
+    // TODO let's eventually save navigation state across sessions.
+    let mut state = NavigationState::new(0);
 
-        file.write_all(quick_note.as_bytes())
-            .expect("it wrote quick note to file");
-    } else {
-        let mut stdout = match stdout().into_raw_mode() {
-            Ok(w) => w,
-            _ => {
-                panic!("Could not open stdout. Something went very wrong")
-            }
-        };
-
-        let stdin = stdin();
-        let mut state = NavigationState::new(0);
-
-        // Main application loop
-        // Show file navigation screen
-        let notes_provider = FileSystemNotesProvider::new(&config);
-        match show_notes(&notes_provider, &mut state, &mut stdout, &stdin, &config) {
-            Ok(_) => {
-                // If we didn't fail to run, just continue implicitly.
-                clear(&mut stdout);
-            }
-            Err(e) => {
-                panic!("{}", e);
-            }
-        }
+    // Main application loop
+    if let Err(e) = run(&notes_provider, &mut state, &mut stdout, &stdin, &config) {
+        error!("{}", e.to_string());
+        return Err(anyhow!(e));
     }
+
+    clear(&mut stdout)?;
+    Ok(())
 }
