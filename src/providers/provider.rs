@@ -3,7 +3,7 @@ use anyhow::Result;
 use std::path::Path;
 
 pub trait NotesProvider {
-    fn get_notes(&self, sort_field: &SortField, sort_dir: &SortDir) -> Vec<NoteEntry>;
+    fn get_notes(&self, sort_field: &SortField, sort_dir: &SortDir) -> Vec<Box<NoteEntry>>;
     fn note_exists(&self, path: &Path) -> bool;
     fn create_note(&self, note: NoteEntry) -> Result<NoteEntry>;
     fn rename_note(&self, note: &NoteEntry, new_path: &Path) -> Result<bool>;

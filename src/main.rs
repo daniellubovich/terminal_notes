@@ -89,6 +89,65 @@ impl NavigationState {
     }
 }
 
+pub enum Field {
+    Size,
+    Name,
+    Modified,
+}
+
+pub struct Column {
+    field: Field,
+}
+
+pub trait Columnar {
+    fn get_value(&self, column: &Column) -> String;
+}
+
+impl Columnar for NoteEntry {
+    fn get_value(&self, column: &Column) -> String {
+        match column.field {
+            Field::Size => self.size.to_string(),
+            Field::Name => self.name.to_string(),
+            Field::Modified => {
+                let date: chrono::DateTime<chrono::Local> = self.modified.into();
+                date.format(DATE_FORMAT).to_string()
+            }
+        }
+    }
+}
+
+pub struct TableDisplay<'a> {
+    rows: Vec<&'a dyn Columnar>,
+    columns: &'a Vec<Column>,
+}
+
+impl TableDisplay<'_> {
+    fn get_column_width(&self, &column) -> usize {
+        for row in &self.rows {
+
+        }
+    }
+
+    fn draw(&self) -> String {
+        let mut table_str = String::new();
+        let mut index: u64 = 0;
+        for row in &self.rows {
+            table_str = format!(
+                "{table_str}{goto}",
+                table_str = table_str,
+                goto = cursor::Goto(1, (index + 2) as u16),
+            );
+            for column in self.columns {
+                table_str = format!("{}{}\t", table_str, row.get_value(column));
+            }
+            table_str = format!("{}", table_str);
+            index = index.saturating_add(1);
+        }
+
+        table_str
+    }
+}
+
 fn launch_editor(filename: &str, editor: &str) {
     Command::new(editor)
         .args([filename])
@@ -107,6 +166,46 @@ fn get_filename_column_width(files: &[NoteEntry]) -> usize {
         }
     }
     width
+}
+
+fn display_file_list<W: Write>(
+    stdout: &mut W,
+    files: &[Box<NoteEntry>],
+    selected_index: usize,
+) -> IOResult<()> {
+    // Clear terminal and prepare to list out files
+    // This function just bubbles up IO errors to let the implementer handle whether to panic.
+
+    let rows: Vec<&dyn Columnar> = files
+        .iter()
+        .map(|file| file.as_ref() as &dyn Columnar)
+        .collect();
+
+    let columns = vec![
+        Column { field: Field::Name },
+        Column { field: Field::Size },
+        Column {
+            field: Field::Modified,
+        },
+    ];
+
+    let table = TableDisplay {
+        rows,
+        columns: &columns,
+    };
+
+    writeln!(
+        stdout,
+        "{clear}{goto}{color}Notes Files:{reset}",
+        clear = termion::clear::All,
+        goto = cursor::Goto(1, 1),
+        color = color::Fg(color::Yellow),
+        reset = color::Fg(color::Reset)
+    )?;
+
+    writeln!(stdout, "{}", table.draw())?;
+    return Ok(());
+
 }
 
 fn draw_header(files: &[NoteEntry], state: &NavigationState) -> String {

@@ -45,9 +45,9 @@ impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
         }
     }
 
-    fn get_notes(&self, sort_field: &SortField, sort_dir: &SortDir) -> Vec<NoteEntry> {
+    fn get_notes(&self, sort_field: &SortField, sort_dir: &SortDir) -> Vec<Box<NoteEntry>> {
         let files = fs::read_dir(self.config.get_notes_directory()).unwrap();
-        let mut file_entries: Vec<NoteEntry> = files
+        let mut file_entries: Vec<Box<NoteEntry>> = files
             .filter(|entry| {
                 // Filter out directories
                 let file = entry.as_ref().unwrap();
@@ -58,13 +58,13 @@ impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
                 let name = file.file_name().to_str().unwrap().to_owned();
                 let path = file.path();
                 let is_default = name == self.config.get_default_notes_file();
-                NoteEntry::new(
+                Box::new(NoteEntry::new(
                     path,
                     name,
                     file.metadata().unwrap().modified().unwrap(),
                     is_default,
                     file.metadata().unwrap().size(),
-                )
+                ))
             })
             .collect();
 
