@@ -38,7 +38,7 @@ struct Args {
     example_config: bool,
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Clone)]
 enum SortField {
     Modified,
     Size,
@@ -97,6 +97,18 @@ pub enum Field {
 
 pub struct Column {
     field: Field,
+    name: String,
+    sort_field: SortField,
+}
+
+impl Column {
+    fn get_name(&self) -> &String {
+        &self.name
+    }
+
+    fn get_sort_field(&self) -> SortField {
+        self.sort_field.clone()
+    }
 }
 
 pub trait Columnar {
@@ -107,7 +119,14 @@ impl Columnar for NoteEntry {
     fn get_value(&self, column: &Column) -> String {
         match column.field {
             Field::Size => self.size.to_string(),
-            Field::Name => self.name.to_string(),
+            Field::Name => {
+                let default_indicator = "  [Default]".to_owned();
+                if self.is_default {
+                    format!("{}{}", self.name, default_indicator)
+                } else {
+                    self.name.to_string()
+                }
+            }
             Field::Modified => {
                 let date: chrono::DateTime<chrono::Local> = self.modified.into();
                 date.format(DATE_FORMAT).to_string()
@@ -119,29 +138,87 @@ impl Columnar for NoteEntry {
 pub struct TableDisplay<'a> {
     rows: Vec<&'a dyn Columnar>,
     columns: &'a Vec<Column>,
+    state: &'a NavigationState,
 }
 
 impl TableDisplay<'_> {
-    fn get_column_width(&self, &column) -> usize {
+    fn get_column_width(&self, column: &Column) -> usize {
+        let default_indicator = "  [Default]".to_owned();
+        let mut width = 0;
         for row in &self.rows {
-
+            let value = row.get_value(column);
+            if value.len() + default_indicator.len() > width {
+                width = value.len() + default_indicator.len();
+            }
         }
+        width
+    }
+
+    fn _draw_header(&self) -> String {
+        let sort_indicator = match self.state.sort_dir {
+            SortDir::Desc => "↓",
+            SortDir::Asc => "↑",
+        };
+
+        let mut header_str = format!(
+            "{clear}{goto}{color}",
+            goto = cursor::Goto(1, 1),
+            clear = termion::clear::All,
+            color = color::Fg(color::Yellow),
+        );
+
+        for column in self.columns {
+            if column.get_sort_field() == self.state.sort_field {
+                header_str = format!(
+                    "{header_str}{value:<width$}{sort_indicator}\t",
+                    value = column.get_name(),
+                    width = self.get_column_width(column),
+                );
+            } else {
+                header_str = format!(
+                    "{header_str}{value:<width$}\t",
+                    value = column.get_name(),
+                    width = self.get_column_width(column),
+                );
+            }
+        }
+
+        format!("{header_str}{reset}\n", reset = color::Fg(color::Reset))
     }
 
     fn draw(&self) -> String {
-        let mut table_str = String::new();
-        let mut index: u64 = 0;
-        for row in &self.rows {
-            table_str = format!(
-                "{table_str}{goto}",
-                table_str = table_str,
+        let mut table_str = self._draw_header();
+
+        let iter = IntoIterator::into_iter(&self.rows);
+        for (index, row) in iter.enumerate() {
+            let mut row_str = String::new();
+
+            if self.state.selected_index() == index {
+                row_str = format!(
+                    "{highlight}{fontcolor}",
+                    highlight = color::Bg(color::White),
+                    fontcolor = color::Fg(color::Black),
+                );
+            }
+
+            row_str = format!(
+                "{row_str}{goto}",
                 goto = cursor::Goto(1, (index + 2) as u16),
             );
+
             for column in self.columns {
-                table_str = format!("{}{}\t", table_str, row.get_value(column));
+                row_str = format!(
+                    "{row_str}{value:<width$}\t",
+                    value = row.get_value(column),
+                    width = self.get_column_width(column)
+                );
             }
-            table_str = format!("{}", table_str);
-            index = index.saturating_add(1);
+
+            table_str = format!(
+                "{table_str}{row_str}{reset_highlight}{reset_fontcolor}",
+                reset_highlight = color::Bg(color::Reset),
+                reset_fontcolor = color::Fg(color::Reset)
+            );
         }
 
         table_str
@@ -157,140 +234,41 @@ fn launch_editor(filename: &str, editor: &str) {
         .expect("Failed to launch editor.");
 }
 
-fn get_filename_column_width(files: &[NoteEntry]) -> usize {
-    let default_indicator = "  [Default]".to_owned();
-    let mut width = 0;
-    for f in files.iter() {
-        if f.name.len() + default_indicator.len() > width {
-            width = f.name.len() + default_indicator.len();
-        }
-    }
-    width
-}
-
 fn display_file_list<W: Write>(
     stdout: &mut W,
     files: &[Box<NoteEntry>],
-    selected_index: usize,
-) -> IOResult<()> {
-    // Clear terminal and prepare to list out files
-    // This function just bubbles up IO errors to let the implementer handle whether to panic.
-
+    state: &NavigationState,
+) -> Result<()> {
     let rows: Vec<&dyn Columnar> = files
         .iter()
         .map(|file| file.as_ref() as &dyn Columnar)
         .collect();
 
     let columns = vec![
-        Column { field: Field::Name },
-        Column { field: Field::Size },
+        Column {
+            field: Field::Name,
+            name: "Name".to_string(),
+            sort_field: SortField::Name,
+        },
+        Column {
+            field: Field::Size,
+            name: "Size".to_string(),
+            sort_field: SortField::Size,
+        },
         Column {
             field: Field::Modified,
+            name: "Modified".to_string(),
+            sort_field: SortField::Modified,
         },
     ];
 
     let table = TableDisplay {
         rows,
         columns: &columns,
+        state,
     };
-
-    writeln!(
-        stdout,
-        "{clear}{goto}{color}Notes Files:{reset}",
-        clear = termion::clear::All,
-        goto = cursor::Goto(1, 1),
-        color = color::Fg(color::Yellow),
-        reset = color::Fg(color::Reset)
-    )?;
 
     writeln!(stdout, "{}", table.draw())?;
-    return Ok(());
-
-}
-
-fn draw_header(files: &[NoteEntry], state: &NavigationState) -> String {
-    let filename_col_width = get_filename_column_width(files);
-
-    let mut col1 = String::from("Notes Files:");
-    let mut col2 = String::from("Modified");
-    let mut col3 = String::from("Size(b)");
-
-    let sort_indicator = match state.sort_dir {
-        SortDir::Desc => "↓",
-        SortDir::Asc => "↑",
-    };
-    match state.sort_field {
-        SortField::Name => col1 = format!("{} {}", col1, sort_indicator),
-        SortField::Modified => col2 = format!("{} {}", col2, sort_indicator),
-        SortField::Size => col3 = format!("{} {}", col3, sort_indicator),
-    };
-
-    format!(
-        "{clear}{goto}{color}{col1:<filename_col_width$}\t{col2}\t{col3}{reset}",
-        filename_col_width = filename_col_width,
-        col1 = col1,
-        col2 = col2,
-        col3 = col3,
-        goto = cursor::Goto(1, 1),
-        clear = termion::clear::All,
-        color = color::Fg(color::Yellow),
-        reset = color::Fg(color::Reset)
-    )
-}
-
-fn display_file_list<W: Write>(
-    stdout: &mut W,
-    files: &[NoteEntry],
-    state: &mut NavigationState,
-) -> Result<()> {
-    let selected_index = state.selected_index();
-
-    // Draw the header.
-    writeln!(stdout, "{}", draw_header(files, state))?;
-
-    let filename_col_width = get_filename_column_width(files);
-    let default_indicator = "  [Default]";
-
-    // Iterate over each file and draw it
-    for (i, f) in files.iter().enumerate() {
-        let entry = f;
-        let date: chrono::DateTime<chrono::Local> = entry.modified.into();
-        let filename = format!(
-            "{file}{default_indicator}",
-            file = entry.name,
-            default_indicator = if entry.is_default {
-                default_indicator
-            } else {
-                ""
-            },
-        );
-
-        if i == selected_index {
-            writeln!(
-                stdout,
-                "{goto}{highlight}{fontcolor}{filename:<filename_col_width$}\t{modified}\t{size}{reset_highlight}{reset_fontcolor}",
-                goto = cursor::Goto(1, (i + 2) as u16),
-                highlight = color::Bg(color::White),
-                reset_highlight = color::Bg(color::Reset),
-                reset_fontcolor = color::Fg(color::Reset),
-                fontcolor = color::Fg(color::Black),
-                filename = filename,
-                filename_col_width = filename_col_width,
-                size = entry.get_size(),
-                modified = date.format(DATE_FORMAT),
-            )?
-        } else {
-            writeln!(
-                stdout,
-                "{goto}{filename:<filename_col_width$}\t{modified}\t{size}",
-                goto = cursor::Goto(1, (i + 2) as u16),
-                filename = filename,
-                filename_col_width = filename_col_width,
-                modified = date.format(DATE_FORMAT),
-                size = entry.get_size(),
-            )?
-        }
-    }
 
     // Print the command prompt at the bottom of the terminal.
     let (_, h) = termion::terminal_size()?;
@@ -300,7 +278,7 @@ fn display_file_list<W: Write>(
         hide = cursor::Hide,
         goto = cursor::Goto(1, h)
     )?;
-    stdout.flush()?;
+
     Ok(())
 }
 
@@ -410,9 +388,9 @@ fn run<T: NotesProvider>(
                     }
                 }
 
-                let col1 = String::from("[n] Notes Files:");
-                let col2 = String::from("[m] Modified");
-                let col3 = String::from("[s] Size(b)");
+                let col1 = String::from("[n] Name:");
+                let col2 = String::from("[s] Size(b)");
+                let col3 = String::from("[m] Modified");
 
                 writeln!(
                     stdout,
