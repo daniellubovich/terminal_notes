@@ -3,11 +3,13 @@ use crate::note_entry::NoteEntry;
 use crate::NotesProvider;
 use crate::SortDir;
 use crate::SortField;
+use anyhow::bail;
 use anyhow::Context;
 use anyhow::Result;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::rc::Rc;
 
 pub struct FileSystemNotesProvider<'a> {
     config: &'a Config,
@@ -20,6 +22,24 @@ impl<'a> FileSystemNotesProvider<'a> {
 }
 
 impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
+    fn validate_default_note_exists(&self) -> Result<()> {
+        if !Path::new(&self.config.get_notes_directory()).exists() {
+            bail!(format!(
+                "No {} folder exists. Please create it first.",
+                self.config.get_notes_directory()
+            ))
+        }
+
+        if !Path::new(&self.config.get_default_notes_path()).exists() {
+            bail!(format!(
+                "No default notes file {} exists. Please create it first.",
+                self.config.get_default_notes_file()
+            ))
+        }
+
+        Ok(())
+    }
+
     fn note_exists(&self, path: &Path) -> bool {
         // This might be more complicated in other providers. E.g. a sqlite database might get a
         // path and deconstruct it into a name or ID to check for existence in the DB.
@@ -45,9 +65,9 @@ impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
         }
     }
 
-    fn get_notes(&self, sort_field: &SortField, sort_dir: &SortDir) -> Vec<Box<NoteEntry>> {
+    fn get_notes(&self, sort_field: &SortField, sort_dir: &SortDir) -> Vec<Rc<NoteEntry>> {
         let files = fs::read_dir(self.config.get_notes_directory()).unwrap();
-        let mut file_entries: Vec<Box<NoteEntry>> = files
+        let mut file_entries: Vec<Rc<NoteEntry>> = files
             .filter(|entry| {
                 // Filter out directories
                 let file = entry.as_ref().unwrap();
@@ -58,7 +78,7 @@ impl<'a> NotesProvider for FileSystemNotesProvider<'a> {
                 let name = file.file_name().to_str().unwrap().to_owned();
                 let path = file.path();
                 let is_default = name == self.config.get_default_notes_file();
-                Box::new(NoteEntry::new(
+                Rc::new(NoteEntry::new(
                     path,
                     name,
                     file.metadata().unwrap().modified().unwrap(),

@@ -54,7 +54,7 @@ impl Config {
         );
         table.insert(
             String::from("default_file_extension"),
-            Value::String(String::from(".txt")),
+            Value::String(String::from("txt")),
         );
         table.insert(
             String::from("default_notes_file"),
