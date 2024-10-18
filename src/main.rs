@@ -13,7 +13,7 @@ use crate::providers::file_system_provider::FileSystemNotesProvider;
 use crate::providers::provider::NotesProvider;
 use crate::render::{Column, Columnar, Field, TableDisplay};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use log::{debug, error, warn, LevelFilter};
 use std::io::{stdin, stdout, Stdout, Write};
@@ -71,17 +71,17 @@ fn main() -> Result<()> {
     // Create stdout and stdin for the main application loop
     let mut stdout = stdout()
         .into_raw_mode()
-        .with_context(|| "Could not open stdout. Something went very wrong")?;
+        .context("Could not open stdout. Something went very wrong")?;
     let stdin = stdin();
 
     // TODO let's eventually save navigation state across sessions.
     let state = NavigationState::new(0);
 
     // Main application loop
-    if let Err(e) = run(&notes_provider, state, &mut stdout, &stdin, &config) {
+    run(&notes_provider, state, &mut stdout, &stdin, &config).map_err(|e| {
         error!("{}", e.to_string());
-        return Err(anyhow!(e));
-    }
+        e
+    })?;
 
     clear(&mut stdout)?;
     Ok(())
@@ -262,6 +262,7 @@ fn run<T: NotesProvider>(
 
                     // Check for empty entry.  Re-prompt if it is.
                     if note_name.is_empty() {
+                        debug!("note name is empty. exiting prompt.");
                         write!(
                             stdout,
                             "{}",
@@ -395,16 +396,16 @@ fn run<T: NotesProvider>(
 }
 
 fn render_list<W: Write>(stdout: &mut W, table: &TableDisplay) -> Result<()> {
-    writeln!(stdout, "{}", table.draw())?;
-
     // Print the command prompt at the bottom of the terminal.
     let (_, h) = termion::terminal_size()?;
+    writeln!(stdout, "{table}", table = table.draw())?;
     write!(
         stdout,
         "{hide}{goto}New file [n]; Rename file [r]; Delete file [dd]; Sort[s]; Quit [q]",
         hide = cursor::Hide,
         goto = cursor::Goto(1, h)
     )?;
+    stdout.flush()?;
 
     Ok(())
 }

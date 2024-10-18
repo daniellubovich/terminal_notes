@@ -29,8 +29,8 @@ impl Column {
         self.name = name;
     }
 
-    pub fn get_sort_field(&self) -> SortField {
-        self.sort_field.clone()
+    pub fn get_sort_field(&self) -> &SortField {
+        &self.sort_field
     }
 }
 
@@ -70,7 +70,7 @@ impl TableDisplay<'_> {
         );
 
         for column in &self.columns {
-            if column.get_sort_field() == self.state.sort_field {
+            if *column.get_sort_field() == self.state.sort_field {
                 header_str = format!(
                     "{header_str}{value:<width$}",
                     value = format!("{} {}", column.get_name(), sort_indicator),

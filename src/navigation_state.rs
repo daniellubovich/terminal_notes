@@ -1,4 +1,4 @@
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq)]
 pub enum SortField {
     Modified,
     Size,
