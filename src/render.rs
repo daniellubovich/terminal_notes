@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use log::debug;
 use termion::{color, cursor};
 
 use crate::navigation_state::{NavigationState, SortDir, SortField};
@@ -90,9 +91,15 @@ impl TableDisplay<'_> {
 
     pub fn draw(&self) -> String {
         let mut table_str = self.draw_header();
+        let (h1, h2) = self.state.get_visible_window();
 
         let iter = IntoIterator::into_iter(&self.rows);
+        let mut render_index: u16 = 2;
         for (index, row) in iter.enumerate() {
+            if index < h1.into() || index > (h2 - 2).into() {
+                continue;
+            }
+
             let mut row_str = String::new();
 
             if self.state.get_selected_index() == index {
@@ -103,10 +110,7 @@ impl TableDisplay<'_> {
                 );
             }
 
-            row_str = format!(
-                "{row_str}{goto}",
-                goto = cursor::Goto(1, (index + 2) as u16),
-            );
+            row_str = format!("{goto}{row_str}", goto = cursor::Goto(1, render_index));
 
             for column in &self.columns {
                 row_str = format!(
@@ -121,8 +125,11 @@ impl TableDisplay<'_> {
                 reset_highlight = color::Bg(color::Reset),
                 reset_fontcolor = color::Fg(color::Reset)
             );
+
+            render_index = render_index.saturating_add(1);
         }
 
+        debug!("{}", table_str);
         table_str
     }
 }
