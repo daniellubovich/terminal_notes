@@ -22,7 +22,6 @@ use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
-use termion::cursor;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
@@ -124,36 +123,33 @@ fn run<T: NotesProvider>(
         .map(|file| file.clone() as Rc<dyn Columnar>)
         .collect();
 
-    let columns = vec![
-        Column {
-            field: Field::Name,
-            name: "Name".to_string(),
-            sort_field: SortField::Name,
-        },
-        Column {
-            field: Field::Size,
-            name: "Size".to_string(),
-            sort_field: SortField::Size,
-        },
-        Column {
-            field: Field::Modified,
-            name: "Modified".to_string(),
-            sort_field: SortField::Modified,
-        },
-    ];
-
-    state.set_list_size(note_list.len() as u16);
-    let mut table = TableDisplay {
+    let mut table = TableDisplay::new(
         rows,
-        columns,
-        state: &mut state,
-    };
-
-    render_list(stdout, &table)?;
+        vec![
+            Column {
+                field: Field::Name,
+                name: "Name".to_string(),
+                sort_field: SortField::Name,
+            },
+            Column {
+                field: Field::Size,
+                name: "Size".to_string(),
+                sort_field: SortField::Size,
+            },
+            Column {
+                field: Field::Modified,
+                name: "Modified".to_string(),
+                sort_field: SortField::Modified,
+            },
+        ],
+        &mut state,
+        String::from("New file [n]; Rename file [r]; Delete file [dd]; Sort[s]; Quit [q]"),
+    );
+    write!(stdout, "{table}", table = table.draw())?;
+    stdout.flush()?;
 
     let mut key_buffer: Vec<Key> = vec![];
     let mut last_keypress_time = Instant::now();
-
     for event_opt in stdin.keys() {
         let event = match event_opt {
             Ok(event) => event,
@@ -233,7 +229,6 @@ fn run<T: NotesProvider>(
                 table.columns[1].set_name(String::from("[s] Size"));
                 table.columns[2].set_name(String::from("[m] Modified"));
 
-                let (_, h) = termion::terminal_size()?;
                 write!(stdout, "{}", table.draw())?;
                 stdout.flush()?;
 
@@ -265,13 +260,13 @@ fn run<T: NotesProvider>(
 
         note_list =
             notes_provider.get_notes(table.state.get_sort_field(), table.state.get_sort_dir());
-        table.state.set_list_size(note_list.len() as u16);
         rows = note_list
             .iter()
             .map(|file| file.clone() as Rc<dyn Columnar>)
             .collect();
-        table.rows = rows;
-        render_list(stdout, &table)?;
+        table.set_rows(rows);
+        write!(stdout, "{table}", table = table.draw())?;
+        stdout.flush()?;
     }
 
     Ok(())
@@ -312,20 +307,4 @@ fn handle_key(
         Key::Char('\n') => Action::OpenEditor,
         _ => Action::Noop,
     }
-}
-
-fn render_list<W: Write>(stdout: &mut W, table: &TableDisplay) -> Result<()> {
-    let (_, h2) = table.state.get_visible_window();
-    writeln!(stdout, "{table}", table = table.draw())?;
-
-    // Print the command prompt at the bottom of the terminal.
-    write!(
-        stdout,
-        "{hide}{goto}New file [n]; Rename file [r]; Delete file [dd]; Sort[s]; Quit [q]",
-        hide = cursor::Hide,
-        goto = cursor::Goto(1, h2 + 2)
-    )?;
-    stdout.flush()?;
-
-    Ok(())
 }

@@ -1,16 +1,9 @@
-# Done
-- dd to delete, D to force delete w/out prompt
-- Create generic provider interface for note management
-
 # High
-- Create Sqlite provider
-- Syncing
-    - Somehow sync notes
+- Add note filtering with '/'
+- Add note grepping with '?' using ripgrep
+- Add status bar instead of janky full-screen prompt
 
 # Low
-- Sorting
-    - Sort change when [s] key is pressed
-- File deletion
-    - Soft deletes? Maybe this is a provider thing
+- File soft deletes
 - File locking
-    - lock files so that they can't be deleted
+- File cloning

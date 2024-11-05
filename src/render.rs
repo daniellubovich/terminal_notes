@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use log::debug;
+use log::{debug, info};
 use termion::{color, cursor};
 
 use crate::navigation_state::{NavigationState, SortDir, SortField};
@@ -43,10 +43,33 @@ pub struct TableDisplay<'a> {
     pub rows: Vec<Rc<dyn Columnar>>,
     pub columns: Vec<Column>,
     pub state: &'a mut NavigationState,
+    pub footer: String,
 }
 
 impl TableDisplay<'_> {
-    fn get_column_width(&self, column: &Column) -> usize {
+    pub fn new(
+        rows: Vec<Rc<dyn Columnar>>,
+        columns: Vec<Column>,
+        state: &mut NavigationState,
+        footer: String,
+    ) -> TableDisplay {
+        // This sucks. maybe there's a better way to merge navigation state with TableDisplay
+        state.set_list_size(rows.len() as u16);
+
+        TableDisplay {
+            rows,
+            columns,
+            state,
+            footer,
+        }
+    }
+
+    pub fn set_rows(&mut self, rows: Vec<Rc<dyn Columnar>>) {
+        self.rows = rows;
+        self.state.set_list_size(self.rows.len() as u16);
+    }
+
+    pub fn get_column_width(&self, column: &Column) -> usize {
         let mut width = column.get_name().len() + 4;
         for row in &self.rows {
             let col_w = row.get_value(column).len() + 4;
@@ -89,12 +112,24 @@ impl TableDisplay<'_> {
         format!("{header_str}{reset}\n", reset = color::Fg(color::Reset))
     }
 
+    pub fn draw_footer(&self) -> String {
+        // Print the command prompt at the bottom of the terminal.
+        let window_size = self.state.get_window_size();
+        let footer_render_index = window_size + 1;
+        info!("Rendering footer at position: {}", footer_render_index);
+        format!(
+            "{goto}{footer}",
+            goto = cursor::Goto(1, footer_render_index),
+            footer = self.footer
+        )
+    }
+
     pub fn draw(&self) -> String {
-        let mut table_str = self.draw_header();
         let (h1, h2) = self.state.get_visible_window();
 
         let iter = IntoIterator::into_iter(&self.rows);
         let mut render_index: u16 = 2;
+        let mut table_str = String::new();
         for (index, row) in iter.enumerate() {
             if index < h1.into() || index > (h2 - 2).into() {
                 continue;
@@ -129,7 +164,12 @@ impl TableDisplay<'_> {
             render_index = render_index.saturating_add(1);
         }
 
-        debug!("{}", table_str);
-        table_str
+
+        format!(
+            "{header_str}{table_str}{footer}", 
+            header_str = self.draw_header(),
+            table_str = table_str,
+            footer = self.draw_footer(),
+        )
     }
 }

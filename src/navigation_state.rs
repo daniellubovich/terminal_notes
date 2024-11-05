@@ -1,5 +1,4 @@
-use anyhow::bail;
-use log::{debug, info};
+use log::info;
 
 #[derive(Eq, PartialEq)]
 pub enum SortField {
@@ -15,101 +14,40 @@ pub enum SortDir {
 }
 
 pub struct NavigationState {
+    list_size: u16,
+    pub sort_field: SortField,
     selected_index: usize,
     sort_dir: SortDir,
-    pub sort_field: SortField,
     visible_window: (u16, u16),
-    list_size: u16,
+    window_buffer: u16,
 }
 
+#[allow(dead_code)]
 impl NavigationState {
     pub fn new(selected_index: usize) -> Self {
-        let (_, h) = termion::terminal_size().unwrap(); // TODO Fix
+        // TODO fix error handling and make the visible window size adjust each render,
+        // so it handles terminal resizing.
+        let (_, h) = termion::terminal_size().unwrap();
         NavigationState {
             selected_index,
             sort_field: SortField::Modified,
             sort_dir: SortDir::Asc,
             visible_window: (0, h - 1),
             list_size: 0,
+            window_buffer: 3,
         }
     }
 
-    pub fn set_list_size(&mut self, list_size: u16) {
-        self.list_size = list_size;
-    }
-
-    pub fn get_selected_index(&self) -> usize {
-        self.selected_index
-    }
-
-    pub fn increment_selected_index(&mut self, increment: usize) {
-        let new_index = self.selected_index.saturating_add(increment);
-
-        let buffer = 3;
-
-        if (new_index as u16) < self.list_size {
-            info!(
-                "incrementing:{},new_index:{},vw:{},{}",
-                increment, new_index, self.visible_window.0, self.visible_window.1
-            );
-            if self.visible_window.1 < (new_index as u16) + buffer {
-                let mut window_start = self.visible_window.0;
-                let visibility_range = self.visible_window.1 - self.visible_window.0;
-                loop {
-                    debug!(
-                        "incrementing vw:{},{},list_size:{}",
-                        window_start,
-                        window_start + visibility_range,
-                        self.list_size
-                    );
-                    let window_end = window_start + visibility_range;
-                    if window_end >= (new_index as u16) + buffer || window_end > self.list_size {
-                        break;
-                    }
-                    window_start = window_start.saturating_add(1);
-                }
-                self.visible_window = (window_start, window_start + visibility_range);
-            }
-
-            self.selected_index = new_index;
-        }
-    }
-
-    pub fn decrement_selected_index(&mut self, decrement: usize) {
-        let new_index = self.selected_index.saturating_sub(decrement);
-        self.selected_index = new_index;
-
-        let buffer = 3;
-
-        info!(
-            "decrementing:{},new_index:{},vw:{},{}",
-            decrement, new_index, self.visible_window.0, self.visible_window.1
-        );
-
-        if self.visible_window.0 + buffer > (new_index as u16) {
-            let mut window_start = self.visible_window.0;
-            let visibility_range = self.visible_window.1 - self.visible_window.0;
-            loop {
-                info!("decrementing vw:{},{}", new_index, window_start + buffer);
-                if window_start + buffer <= (new_index as u16) || window_start == 0 {
-                    break;
-                }
-                window_start = window_start.saturating_sub(1);
-            }
-            self.visible_window = (window_start, window_start + visibility_range);
-        }
-    }
-
-    pub fn set_selected_index(&mut self, new_index: usize) {
-        if new_index > self.selected_index {
-            self.increment_selected_index(new_index - self.selected_index);
-        } else {
-            self.decrement_selected_index(self.selected_index - new_index);
-        }
+    pub fn get_list_size(&self) -> u16 {
+        self.list_size
     }
 
     pub fn get_visible_window(&self) -> (u16, u16) {
         self.visible_window
+    }
+
+    pub fn get_window_size(&self) -> u16 {
+        self.visible_window.1 - self.visible_window.0
     }
 
     pub fn get_sort_dir(&self) -> &SortDir {
@@ -120,6 +58,76 @@ impl NavigationState {
         &self.sort_field
     }
 
+    pub fn get_window_buffer(&self) -> u16 {
+        self.window_buffer
+    }
+
+    pub fn get_selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+
+    pub fn increment_selected_index(&mut self, increment: usize) {
+        let new_index = self.selected_index.saturating_add(increment);
+
+        if (new_index as u16) < self.list_size {
+            if self.visible_window.1 < (new_index as u16) + self.window_buffer {
+                let mut window_start = self.visible_window.0;
+                let visibility_range = self.visible_window.1 - self.visible_window.0;
+                loop {
+                    let window_end = window_start + visibility_range;
+                    if window_end >= (new_index as u16) + self.window_buffer || window_end > self.list_size {
+                        break;
+                    }
+                    window_start = window_start.saturating_add(1);
+                }
+                self.visible_window = (window_start, window_start + visibility_range);
+            }
+
+            info!(
+                "incrementing index - new_index:{},old index:{},vw:{},{}",
+                new_index, self.selected_index, self.visible_window.0, self.visible_window.1
+            );
+
+            self.selected_index = new_index;
+        }
+    }
+
+    pub fn decrement_selected_index(&mut self, decrement: usize) {
+        let new_index = self.selected_index.saturating_sub(decrement);
+        self.selected_index = new_index;
+
+        if self.visible_window.0 + self.window_buffer > (new_index as u16) {
+            let mut window_start = self.visible_window.0;
+            let visibility_range = self.visible_window.1 - self.visible_window.0;
+            loop {
+                if window_start + self.window_buffer <= (new_index as u16) || window_start == 0 {
+                    break;
+                }
+                window_start = window_start.saturating_sub(1);
+            }
+            self.visible_window = (window_start, window_start + visibility_range);
+        }
+
+        info!(
+            "decrementing index - new_index:{},old index:{},vw:{},{}",
+            new_index, self.selected_index, self.visible_window.0, self.visible_window.1
+        );
+
+        self.selected_index = new_index;
+    }
+
+    pub fn set_list_size(&mut self, list_size: u16) {
+        self.list_size = list_size;
+    }
+
+    pub fn set_selected_index(&mut self, new_index: usize) {
+        if new_index > self.selected_index {
+            self.increment_selected_index(new_index - self.selected_index);
+        } else {
+            self.decrement_selected_index(self.selected_index - new_index);
+        }
+    }
     pub fn sort(&mut self, sort_field: SortField) {
         let mut sort_dir = SortDir::Desc;
         if self.sort_field == sort_field {
