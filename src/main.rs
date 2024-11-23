@@ -12,7 +12,7 @@ use crate::navigation_state::{NavigationState, SortDir, SortField};
 use crate::prompt::clear;
 use crate::providers::file_system_provider::FileSystemNotesProvider;
 use crate::providers::provider::NotesProvider;
-use crate::render::{Column, Columnar, Field, TableDisplay};
+use crate::render::{table, Column, Columnar, Field};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -101,9 +101,8 @@ fn main() -> Result<()> {
     let state = NavigationState::new(0);
 
     // Main application loop
-    run(&notes_provider, state, &mut stdout, &stdin, &config).map_err(|e| {
+    run(&notes_provider, state, &mut stdout, &stdin, &config).inspect_err(|e| {
         error!("{}", e.to_string());
-        e
     })?;
 
     clear(&mut stdout)?;
@@ -117,35 +116,33 @@ fn run<T: NotesProvider>(
     stdin: &std::io::Stdin,
     config: &Config,
 ) -> Result<()> {
+    let columns = vec![
+        Column {
+            field: Field::Name,
+            name: "Name".to_string(),
+            sort_field: SortField::Name,
+        },
+        Column {
+            field: Field::Size,
+            name: "Size".to_string(),
+            sort_field: SortField::Size,
+        },
+        Column {
+            field: Field::Modified,
+            name: "Modified".to_string(),
+            sort_field: SortField::Modified,
+        },
+    ];
+    let footer = "New file [n]; Rename file [r]; Delete file [dd]; Sort[s]; Quit [q]";
+
     let mut note_list = notes_provider.get_notes(state.get_sort_field(), state.get_sort_dir());
+    state.set_list_size(note_list.len() as u16);
+
     let mut rows: Vec<Rc<dyn Columnar>> = note_list
         .iter()
         .map(|file| file.clone() as Rc<dyn Columnar>)
         .collect();
-
-    let mut table = TableDisplay::new(
-        rows,
-        vec![
-            Column {
-                field: Field::Name,
-                name: "Name".to_string(),
-                sort_field: SortField::Name,
-            },
-            Column {
-                field: Field::Size,
-                name: "Size".to_string(),
-                sort_field: SortField::Size,
-            },
-            Column {
-                field: Field::Modified,
-                name: "Modified".to_string(),
-                sort_field: SortField::Modified,
-            },
-        ],
-        &mut state,
-        String::from("New file [n]; Rename file [r]; Delete file [dd]; Sort[s]; Quit [q]"),
-    );
-    write!(stdout, "{table}", table = table.draw())?;
+    write!(stdout, "{}", table::draw(&rows, &columns, footer, &state))?;
     stdout.flush()?;
 
     let mut key_buffer: Vec<Key> = vec![];
@@ -165,37 +162,35 @@ fn run<T: NotesProvider>(
         match handle_key(event, &mut key_buffer, &mut last_keypress_time) {
             Action::Quit => break,
             Action::NavDown => {
-                table.state.increment_selected_index(1);
+                state.increment_selected_index(1);
             }
             Action::NavUp => {
-                table.state.decrement_selected_index(1);
+                state.decrement_selected_index(1);
             }
             Action::NavTop => {
-                table.state.set_selected_index(note_list.len() - 1);
+                state.set_selected_index(note_list.len() - 1);
             }
             Action::NavBottom => {
-                table.state.set_selected_index(0);
+                state.set_selected_index(0);
             }
             Action::Rename => {
-                let selected_note = &note_list[table.state.get_selected_index()];
+                let selected_note = &note_list[state.get_selected_index()];
                 rename_note(selected_note, notes_provider, config, stdout, stdin)?;
 
                 // TODO update this to find the index of the new note, taking into account the
                 // current sort state
-                table.state.set_selected_index(0);
+                state.set_selected_index(0);
             }
             Action::New => {
                 create_note(notes_provider, config, stdout, stdin)?;
             }
             Action::Delete => {
-                let note_to_del = &note_list[table.state.get_selected_index()];
+                let note_to_del = &note_list[state.get_selected_index()];
                 match delete_note(note_to_del, notes_provider, config, stdout, stdin) {
                     Ok(true) => {
                         // Note was deleted
-                        if table.state.get_selected_index() > note_list.len() - 2 {
-                            table.state.set_selected_index(
-                                table.state.get_selected_index().saturating_sub(1),
-                            );
+                        if state.get_selected_index() > note_list.len() - 2 {
+                            state.set_selected_index(state.get_selected_index().saturating_sub(1));
                         }
                     }
                     Ok(false) => {
@@ -206,7 +201,7 @@ fn run<T: NotesProvider>(
             }
             Action::OpenEditor => {
                 // TODO this doesn't work if we eventually convert to not using the FS provider
-                let file_path = note_list[table.state.get_selected_index()]
+                let file_path = note_list[state.get_selected_index()]
                     .path
                     .to_str()
                     .context("could not convert file path to string")?;
@@ -225,47 +220,64 @@ fn run<T: NotesProvider>(
 
                 // TODO This is pretty janky right now. I think the columns could be passed a navigation
                 // state and render their own [key] indicator.
-                table.columns[0].set_name(String::from("[n] Name"));
-                table.columns[1].set_name(String::from("[s] Size"));
-                table.columns[2].set_name(String::from("[m] Modified"));
+                let sorted_columns = vec![
+                    Column {
+                        field: Field::Name,
+                        name: "[n] Name".to_string(),
+                        sort_field: SortField::Name,
+                    },
+                    Column {
+                        field: Field::Size,
+                        name: "[s] Size".to_string(),
+                        sort_field: SortField::Size,
+                    },
+                    Column {
+                        field: Field::Modified,
+                        name: "[m] Modified".to_string(),
+                        sort_field: SortField::Modified,
+                    },
+                ];
 
-                write!(stdout, "{}", table.draw())?;
+                write!(
+                    stdout,
+                    "{}",
+                    table::draw(&rows, &sorted_columns, footer, &state)
+                )?;
                 stdout.flush()?;
 
                 for k_event in stdin.keys() {
                     let key = k_event.context("could not read input")?;
                     match key {
                         Key::Char('s') => {
-                            table.state.sort(SortField::Size);
+                            state.sort(SortField::Size);
                             break;
                         }
                         Key::Char('n') => {
-                            table.state.sort(SortField::Name);
+                            state.sort(SortField::Name);
                             break;
                         }
                         Key::Char('m') => {
-                            table.state.sort(SortField::Modified);
+                            state.sort(SortField::Modified);
                             break;
                         }
                         _ => continue,
                     };
                 }
-
-                table.columns[0].set_name(String::from("Name"));
-                table.columns[1].set_name(String::from("Size"));
-                table.columns[2].set_name(String::from("Modified"));
             }
             Action::Noop => {}
         }
 
-        note_list =
-            notes_provider.get_notes(table.state.get_sort_field(), table.state.get_sort_dir());
+        note_list = notes_provider.get_notes(state.get_sort_field(), state.get_sort_dir());
         rows = note_list
             .iter()
             .map(|file| file.clone() as Rc<dyn Columnar>)
             .collect();
-        table.set_rows(rows);
-        write!(stdout, "{table}", table = table.draw())?;
+        state.set_list_size(note_list.len() as u16);
+        write!(
+            stdout,
+            "{table}",
+            table = table::draw(&rows, &columns, footer, &state)
+        )?;
         stdout.flush()?;
     }
 

@@ -1,4 +1,4 @@
-use log::info;
+use log::debug;
 
 #[derive(Eq, PartialEq)]
 pub enum SortField {
@@ -28,13 +28,15 @@ impl NavigationState {
         // TODO fix error handling and make the visible window size adjust each render,
         // so it handles terminal resizing.
         let (_, h) = termion::terminal_size().unwrap();
+
+        let list_height = h - 2; // subtract 2 -- one for header, one for footer
         NavigationState {
             selected_index,
             sort_field: SortField::Modified,
             sort_dir: SortDir::Asc,
-            visible_window: (0, h - 1),
+            visible_window: (0, list_height - 1), // subtract one since window is 0-based
             list_size: 0,
-            window_buffer: 3,
+            window_buffer: 2,
         }
     }
 
@@ -66,17 +68,21 @@ impl NavigationState {
         self.selected_index
     }
 
-
     pub fn increment_selected_index(&mut self, increment: usize) {
         let new_index = self.selected_index.saturating_add(increment);
 
         if (new_index as u16) < self.list_size {
-            if self.visible_window.1 < (new_index as u16) + self.window_buffer {
+            if self.visible_window.1 < ((new_index as u16) + self.window_buffer) {
+                debug!(
+                    "{} < {}",
+                    self.visible_window.1,
+                    ((new_index as u16) + self.window_buffer)
+                );
                 let mut window_start = self.visible_window.0;
                 let visibility_range = self.visible_window.1 - self.visible_window.0;
                 loop {
                     let window_end = window_start + visibility_range;
-                    if window_end >= (new_index as u16) + self.window_buffer || window_end > self.list_size {
+                    if window_end >= (new_index as u16) || window_end > self.list_size {
                         break;
                     }
                     window_start = window_start.saturating_add(1);
@@ -84,7 +90,7 @@ impl NavigationState {
                 self.visible_window = (window_start, window_start + visibility_range);
             }
 
-            info!(
+            debug!(
                 "incrementing index - new_index:{},old index:{},vw:{},{}",
                 new_index, self.selected_index, self.visible_window.0, self.visible_window.1
             );
@@ -95,7 +101,6 @@ impl NavigationState {
 
     pub fn decrement_selected_index(&mut self, decrement: usize) {
         let new_index = self.selected_index.saturating_sub(decrement);
-        self.selected_index = new_index;
 
         if self.visible_window.0 + self.window_buffer > (new_index as u16) {
             let mut window_start = self.visible_window.0;
@@ -109,7 +114,7 @@ impl NavigationState {
             self.visible_window = (window_start, window_start + visibility_range);
         }
 
-        info!(
+        debug!(
             "decrementing index - new_index:{},old index:{},vw:{},{}",
             new_index, self.selected_index, self.visible_window.0, self.visible_window.1
         );
