@@ -33,7 +33,7 @@ impl NavigationState {
         NavigationState {
             selected_index,
             sort_field: SortField::Modified,
-            sort_dir: SortDir::Asc,
+            sort_dir: SortDir::Desc,
             visible_window: (0, list_height - 1), // subtract one since window is 0-based
             list_size: 0,
             window_buffer: 2,
